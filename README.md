@@ -154,10 +154,10 @@ Bun supports PostgreSQL array relations, allowing you to store relation IDs in a
 type User struct {
     ID       int64 `bun:",pk,autoincrement"`
     Name     string
-    RoleIDs  []int64 `bun:",array"` // PostgreSQL array column
+    RoleIDs  []int64 `bun:",array"` // Only the array column needs the array tag
     
-    // Define a relation that uses the array column
-    Roles    []Role `bun:",array,rel:has-many,join:role_ids=id"`
+    // The relation field doesn't need the array tag
+    Roles    []Role `bun:",rel:has-many,join:role_ids=id"`
 }
 
 type Role struct {
@@ -172,10 +172,10 @@ type Role struct {
 type Author struct {
     ID          int64 `bun:",pk,autoincrement"`
     Name        string
-    PostIDs     []int64 `bun:",array"` // Array of post IDs
+    PostIDs     []int64 `bun:",array"` // Only the array column needs the array tag
     
-    // Author has one featured post from their array of posts
-    FeaturedPost *Post `bun:",array,rel:has-one,join:post_ids=id"`
+    // The relation field doesn't need the array tag
+    FeaturedPost *Post `bun:",rel:has-one,join:post_ids=id"`
 }
 
 type Post struct {
@@ -190,12 +190,16 @@ type Post struct {
 type Comment struct {
     ID        int64 `bun:",pk,autoincrement"`
     Content   string
-    PostIDs   []int64 `bun:",array"` // Array of post IDs this comment belongs to
+    PostIDs   []int64 `bun:",array"` // Only the array column needs the array tag
     
-    // A comment belongs to one of multiple possible posts
-    Post      *Post `bun:",array,rel:belongs-to,join:post_ids=id"`
+    // The relation field doesn't need the array tag
+    Post      *Post `bun:",rel:belongs-to,join:post_ids=id"`
 }
 ```
+
+The system automatically detects that a relation is using an array column when:
+1. The field referenced in the join tag (e.g., `role_ids`) has the `array` tag
+2. The join tag references a field with snake_case, but Go uses CamelCase (e.g., `GroupIDs` in Go becomes `group_ids` in SQL)
 
 To query the array relation:
 

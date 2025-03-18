@@ -576,7 +576,18 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 		for i, baseColumn := range baseColumns {
 			joinColumn := joinColumns[i]
 
-			if f := t.FieldMap[baseColumn]; f != nil {
+			var f *Field
+
+			// First look up the field by the exact column name
+			f = t.FieldMap[baseColumn]
+
+			// If not found, try converting snake_case to CamelCase
+			if f == nil {
+				camelCaseFieldName := internal.ToExported(internal.CamelCased(baseColumn))
+				f = t.FieldMap[camelCaseFieldName]
+			}
+
+			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
 			} else {
 				panic(fmt.Errorf(
@@ -647,7 +658,20 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 	if join, ok := field.Tag.Options["join"]; ok {
 		baseColumns, joinColumns := parseRelationJoin(join)
 		for i, baseColumn := range baseColumns {
-			if f := t.FieldMap[baseColumn]; f != nil {
+			joinColumn := joinColumns[i]
+
+			var f *Field
+
+			// First look up the field by the exact column name
+			f = t.FieldMap[baseColumn]
+
+			// If not found, try converting snake_case to CamelCase
+			if f == nil {
+				camelCaseFieldName := internal.ToExported(internal.CamelCased(baseColumn))
+				f = t.FieldMap[camelCaseFieldName]
+			}
+
+			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
 			} else {
 				panic(fmt.Errorf(
@@ -656,7 +680,6 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 				))
 			}
 
-			joinColumn := joinColumns[i]
 			if f := joinTable.FieldMap[joinColumn]; f != nil {
 				rel.JoinFields = append(rel.JoinFields, f)
 			} else {
@@ -735,7 +758,18 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 				continue
 			}
 
-			if f := t.FieldMap[baseColumn]; f != nil {
+			var f *Field
+
+			// First look up the field by the exact column name
+			f = t.FieldMap[baseColumn]
+
+			// If not found, try converting snake_case to CamelCase
+			if f == nil {
+				camelCaseFieldName := internal.ToExported(internal.CamelCased(baseColumn))
+				f = t.FieldMap[camelCaseFieldName]
+			}
+
+			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
 			} else {
 				panic(fmt.Errorf(
@@ -858,20 +892,32 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 
 	leftField := m2mTable.fieldByGoName(leftColumn)
 	if leftField == nil {
-		panic(fmt.Errorf(
-			"bun: %s many-to-many %s: %s must have field %s "+
-				"(to override, use tag join:LeftField=RightField on field %s.%s",
-			t.TypeName, field.GoName, m2mTable.TypeName, leftColumn, t.TypeName, field.GoName,
-		))
+		// Try converting from snake_case to CamelCase
+		camelCaseFieldName := internal.ToExported(internal.CamelCased(leftColumn))
+		leftField = m2mTable.fieldByGoName(camelCaseFieldName)
+
+		if leftField == nil {
+			panic(fmt.Errorf(
+				"bun: %s many-to-many %s: %s must have field %s "+
+					"(to override, use tag join:LeftField=RightField on field %s.%s",
+				t.TypeName, field.GoName, m2mTable.TypeName, leftColumn, t.TypeName, field.GoName,
+			))
+		}
 	}
 
 	rightField := m2mTable.fieldByGoName(rightColumn)
 	if rightField == nil {
-		panic(fmt.Errorf(
-			"bun: %s many-to-many %s: %s must have field %s "+
-				"(to override, use tag join:LeftField=RightField on field %s.%s",
-			t.TypeName, field.GoName, m2mTable.TypeName, rightColumn, t.TypeName, field.GoName,
-		))
+		// Try converting from snake_case to CamelCase
+		camelCaseFieldName := internal.ToExported(internal.CamelCased(rightColumn))
+		rightField = m2mTable.fieldByGoName(camelCaseFieldName)
+
+		if rightField == nil {
+			panic(fmt.Errorf(
+				"bun: %s many-to-many %s: %s must have field %s "+
+					"(to override, use tag join:LeftField=RightField on field %s.%s",
+				t.TypeName, field.GoName, m2mTable.TypeName, rightColumn, t.TypeName, field.GoName,
+			))
+		}
 	}
 
 	leftRel := m2mTable.belongsToRelation(leftField)
