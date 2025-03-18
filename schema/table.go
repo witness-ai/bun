@@ -536,7 +536,6 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 		Type:      BelongsToRelation,
 		Field:     field,
 		JoinTable: joinTable,
-		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
@@ -618,6 +617,14 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 			t.TypeName, field.GoName, t.TypeName, fkName, field.GoName,
 		))
 	}
+
+	for _, f := range rel.BaseFields {
+		if f.Tag.HasOption("array") {
+			rel.IsArray = true
+			break
+		}
+	}
+
 	return rel
 }
 
@@ -631,7 +638,6 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 		Type:      HasOneRelation,
 		Field:     field,
 		JoinTable: joinTable,
-		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
@@ -683,6 +689,14 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 			field.GoName, t.TypeName, joinTable.TypeName, fkName, field.GoName,
 		))
 	}
+
+	for _, f := range rel.BaseFields {
+		if f.Tag.HasOption("array") {
+			rel.IsArray = true
+			break
+		}
+	}
+
 	return rel
 }
 
@@ -703,7 +717,6 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 		Type:      HasManyRelation,
 		Field:     field,
 		JoinTable: joinTable,
-		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
@@ -782,6 +795,13 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 		rel.PolymorphicValue = polymorphicValue
 	}
 
+	for _, f := range rel.BaseFields {
+		if f.Tag.HasOption("array") {
+			rel.IsArray = true
+			break
+		}
+	}
+
 	return rel
 }
 
@@ -819,7 +839,6 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 		Field:     field,
 		JoinTable: joinTable,
 		M2MTable:  m2mTable,
-		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
@@ -862,6 +881,13 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 	rightRel := m2mTable.belongsToRelation(rightField)
 	rel.JoinFields = rightRel.JoinFields
 	rel.M2MJoinFields = rightRel.BaseFields
+
+	for _, f := range rel.M2MBaseFields {
+		if f.Tag.HasOption("array") {
+			rel.IsArray = true
+			break
+		}
+	}
 
 	return rel
 }

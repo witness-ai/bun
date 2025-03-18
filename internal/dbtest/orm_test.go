@@ -462,7 +462,7 @@ func testArrayRelations(t *testing.T, db *bun.DB) {
 		RoleIDs []int64 `bun:",array"` // PostgreSQL array column
 
 		// Define a relation that uses the array column
-		Roles []Role `bun:",array,rel:has-many,join:role_ids=id"`
+		Roles []Role `bun:",rel:has-many,join:role_ids=id"`
 	}
 
 	// Create schema for test
@@ -554,7 +554,7 @@ func testArrayRelations(t *testing.T, db *bun.DB) {
 		PostIDs []int64 `bun:",array"` // Array of post IDs
 
 		// A comment belongs to one of multiple possible posts (array-based belongs-to)
-		Post *Post `bun:",array,rel:belongs-to,join:post_ids=id"`
+		Post *Post `bun:",rel:belongs-to,join:post_ids=id"`
 	}
 
 	type Author struct {
@@ -563,7 +563,7 @@ func testArrayRelations(t *testing.T, db *bun.DB) {
 		PostIDs []int64 `bun:",array"` // Array of post IDs
 
 		// Author has one featured post stored in an array (array-based has-one)
-		FeaturedPost *Post `bun:",array,rel:has-one,join:post_ids=id"`
+		FeaturedPost *Post `bun:",rel:has-one,join:post_ids=id"`
 	}
 
 	// Create schema
@@ -717,7 +717,7 @@ func testArrayM2MRelations(t *testing.T, db *bun.DB) {
 		TagIDs []int64 `bun:",array"` // PostgreSQL array column instead of join table
 
 		// Define an array-based relation that replaces traditional M2M
-		Tags []Tag `bun:",array,rel:has-many,join:tag_ids=id"`
+		Tags []Tag `bun:",rel:has-many,join:tag_ids=id"`
 	}
 
 	// Create schema for test
