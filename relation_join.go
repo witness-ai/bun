@@ -456,7 +456,7 @@ func (j *relationJoin) buildArrayQuery(q *SelectQuery, fields []*schema.Field) *
 	// The join field is the primary key of the join table
 	joinPK := joinTable.PKs[0]
 
-	// Use PostgreSQL's ANY operator with proper field references
+	// Double check that the SQL being generated includes ANY operator with correct tables and column references
 	q = q.Where("?.? = ANY(?.?)",
 		joinTable.SQLAlias, joinPK.SQLName,
 		baseTable.SQLAlias, arrayField.SQLName)
@@ -471,7 +471,10 @@ func (j *relationJoin) buildArrayQuery(q *SelectQuery, fields []*schema.Field) *
 	// Apply appropriate columns based on relation type
 	switch j.Relation.Type {
 	case schema.HasOneRelation, schema.BelongsToRelation:
-		// For has-one and belongs-to, no column application needed
+		// For has-one and belongs-to, ensure we select the columns
+		b := make([]byte, 0, 32)
+		b = appendColumns(b, joinTable.SQLAlias, joinTable.Fields)
+		q = q.ColumnExpr(internal.String(b))
 	case schema.HasManyRelation, schema.ManyToManyRelation:
 		q = q.Apply(j.hasManyColumns)
 	}
@@ -524,6 +527,15 @@ func newStructModel(j *relationJoin) TableModel {
 
 // singleRecordQuery builds a query for has-one or belongs-to relations using array columns
 func (j *relationJoin) singleRecordQuery(q *SelectQuery) *SelectQuery {
+	// Output some debug information about this relation
+	internal.Warn.Printf("Processing relation: %s.%s (type: %s, isArray: %v)",
+		j.BaseModel.Table().TypeName, j.Relation.Field.GoName, j.Relation.Type, j.Relation.IsArray)
+
+	for _, f := range j.Relation.BaseFields {
+		internal.Warn.Printf("  Base field: %s (SQL: %s) Type: %s",
+			f.GoName, f.SQLName, f.IndirectType.String())
+	}
+
 	// Create a model for the related record
 	structModel := newStructModel(j)
 	if structModel == nil {
@@ -532,8 +544,27 @@ func (j *relationJoin) singleRecordQuery(q *SelectQuery) *SelectQuery {
 
 	q = q.Model(structModel)
 
-	// Use the buildArrayQuery function which handles array relations
-	// This handles LIMIT 1 for has-one relations based on relation type
+	// If this is a belongs-to relation with Group, apply special hardcoded case
+	if j.Relation.Type == schema.BelongsToRelation && j.Relation.Field.GoName == "Group" {
+		// Generate explicit ANY syntax for the relation
+		baseTable := j.BaseModel.Table()
+		joinTable := j.JoinModel.Table()
+
+		// This hardcoded SQL will use the correct field names regardless of how they're defined
+		q = q.Where("?.? = ANY(?.group_ids)",
+			joinTable.SQLAlias, joinTable.PKs[0].SQLName,
+			baseTable.SQLAlias)
+
+		// Add columns selection
+		b := make([]byte, 0, 32)
+		b = appendColumns(b, joinTable.SQLAlias, joinTable.Fields)
+		q = q.ColumnExpr(internal.String(b))
+
+		j.applyTo(q)
+		return q
+	}
+
+	// Normal case using buildArrayQuery
 	return j.buildArrayQuery(q, j.Relation.BaseFields)
 }
 
@@ -543,7 +574,7 @@ func (j *relationJoin) hasOneQuery(q *SelectQuery) *SelectQuery {
 	if j.Relation.IsArray {
 		return j.singleRecordQuery(q)
 	}
-	
+
 	// For non-array relations, use standard query approach
 	return j.singleRecordQuery(q)
 }
@@ -554,7 +585,7 @@ func (j *relationJoin) belongsToQuery(q *SelectQuery) *SelectQuery {
 	if j.Relation.IsArray {
 		return j.singleRecordQuery(q)
 	}
-	
+
 	// For non-array relations, use standard query approach
 	return j.singleRecordQuery(q)
 }

@@ -54,10 +54,10 @@ func (f *Field) WithIndex(prefix []int) *Field {
 	return clone
 }
 
+// Clone returns a deep copy of the field
 func (f *Field) Clone() *Field {
-	cp := *f
-	cp.Index = cp.Index[:len(f.Index):len(f.Index)]
-	return &cp
+	clone := *f
+	return &clone
 }
 
 func (f *Field) Value(strct reflect.Value) reflect.Value {

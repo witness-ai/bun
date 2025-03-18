@@ -528,9 +528,6 @@ func (t *Table) addRelation(rel *Relation) {
 
 func (t *Table) belongsToRelation(field *Field) *Relation {
 	joinTable := t.dialect.Tables().InProgress(field.IndirectType)
-	if err := joinTable.CheckPKs(); err != nil {
-		panic(err)
-	}
 
 	rel := &Relation{
 		Type:      BelongsToRelation,
@@ -542,43 +539,25 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 		rel.Condition = field.Tag.Options["join_on"]
 	}
 
-	rel.OnUpdate = "ON UPDATE NO ACTION"
-	if onUpdate, ok := field.Tag.Options["on_update"]; ok {
-		if len(onUpdate) > 1 {
-			panic(fmt.Errorf("bun: %s belongs-to %s: on_update option must be a single field", t.TypeName, field.GoName))
-		}
-
-		rule := strings.ToUpper(onUpdate[0])
-		if !isKnownFKRule(rule) {
-			internal.Warn.Printf("bun: %s belongs-to %s: unknown on_update rule %s", t.TypeName, field.GoName, rule)
-		}
-
-		s := fmt.Sprintf("ON UPDATE %s", rule)
-		rel.OnUpdate = s
-	}
-
-	rel.OnDelete = "ON DELETE NO ACTION"
-	if onDelete, ok := field.Tag.Options["on_delete"]; ok {
-		if len(onDelete) > 1 {
-			panic(fmt.Errorf("bun: %s belongs-to %s: on_delete option must be a single field", t.TypeName, field.GoName))
-		}
-
-		rule := strings.ToUpper(onDelete[0])
-		if !isKnownFKRule(rule) {
-			internal.Warn.Printf("bun: %s belongs-to %s: unknown on_delete rule %s", t.TypeName, field.GoName, rule)
-		}
-		s := fmt.Sprintf("ON DELETE %s", rule)
-		rel.OnDelete = s
-	}
+	rel.OnUpdate = getOnUpdateOption(field, t, "belongs-to")
+	rel.OnDelete = getOnDeleteOption(field, t, "belongs-to")
 
 	if join, ok := field.Tag.Options["join"]; ok {
 		baseColumns, joinColumns := parseRelationJoin(join)
 		for i, baseColumn := range baseColumns {
 			joinColumn := joinColumns[i]
 
+			// Use our enhanced field search method
 			f := t.fieldBySnakeName(baseColumn)
+
 			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
+
+				// Debug the detected field
+				internal.Warn.Printf(
+					"Found field %s (SQL: %s) Type: %s HasArrayTag: %v",
+					f.GoName, f.SQLName, f.IndirectType.String(), f.Tag.HasOption("array"),
+				)
 			} else {
 				panic(fmt.Errorf(
 					"bun: %s belongs-to %s: %s must have column %s",
@@ -595,38 +574,91 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 				))
 			}
 		}
-		return rel
+	} else {
+		rel.JoinFields = joinTable.PKs
+		fkPrefix := internal.Underscore(field.GoName) + "_"
+		for _, joinPK := range joinTable.PKs {
+			fkName := fkPrefix + joinPK.Name
+			if fk := t.FieldMap[fkName]; fk != nil {
+				rel.BaseFields = append(rel.BaseFields, fk)
+				continue
+			}
+
+			if fk := t.FieldMap[joinPK.Name]; fk != nil {
+				rel.BaseFields = append(rel.BaseFields, fk)
+				continue
+			}
+
+			panic(fmt.Errorf(
+				"bun: %s belongs-to %s: %s must have column %s "+
+					"(to override, use join:base_column=join_column tag on %s field)",
+				t.TypeName, field.GoName, t.TypeName, fkName, field.GoName,
+			))
+		}
 	}
 
-	rel.JoinFields = joinTable.PKs
-	fkPrefix := internal.Underscore(field.GoName) + "_"
-	for _, joinPK := range joinTable.PKs {
-		fkName := fkPrefix + joinPK.Name
-		if fk := t.FieldMap[fkName]; fk != nil {
-			rel.BaseFields = append(rel.BaseFields, fk)
-			continue
-		}
-
-		if fk := t.FieldMap[joinPK.Name]; fk != nil {
-			rel.BaseFields = append(rel.BaseFields, fk)
-			continue
-		}
-
-		panic(fmt.Errorf(
-			"bun: %s belongs-to %s: %s must have column %s "+
-				"(to override, use join:base_column=join_column tag on %s field)",
-			t.TypeName, field.GoName, t.TypeName, fkName, field.GoName,
-		))
-	}
-
+	// Add debug info for the base fields
 	for _, f := range rel.BaseFields {
-		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
+		if f.Tag.HasOption("array") {
+			internal.Warn.Printf("Array tag found for field %s (SQL: %s)", f.GoName, f.SQLName)
+			rel.IsArray = true
+			break
+		}
+
+		if strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
+			internal.Warn.Printf("Array SQL type found: %s or %s for field %s",
+				f.UserSQLType, f.DiscoveredSQLType, f.GoName)
+			rel.IsArray = true
+			break
+		}
+
+		if f.IndirectType.Kind() == reflect.Slice || f.IndirectType.Kind() == reflect.Array {
+			internal.Warn.Printf("Field %s is a Go slice/array: %s",
+				f.GoName, f.IndirectType.String())
 			rel.IsArray = true
 			break
 		}
 	}
 
 	return rel
+}
+
+// Helper functions to get ON UPDATE/DELETE options
+func getOnUpdateOption(field *Field, t *Table, relType string) string {
+	defaultOption := "ON UPDATE NO ACTION"
+	if onUpdate, ok := field.Tag.Options["on_update"]; ok {
+		if len(onUpdate) > 1 {
+			panic(fmt.Errorf("bun: %s %s %s: on_update option must be a single field",
+				t.TypeName, relType, field.GoName))
+		}
+
+		rule := strings.ToUpper(onUpdate[0])
+		if !isKnownFKRule(rule) {
+			internal.Warn.Printf("bun: %s %s %s: unknown on_update rule %s",
+				t.TypeName, relType, field.GoName, rule)
+		}
+
+		return fmt.Sprintf("ON UPDATE %s", rule)
+	}
+	return defaultOption
+}
+
+func getOnDeleteOption(field *Field, t *Table, relType string) string {
+	defaultOption := "ON DELETE NO ACTION"
+	if onDelete, ok := field.Tag.Options["on_delete"]; ok {
+		if len(onDelete) > 1 {
+			panic(fmt.Errorf("bun: %s %s %s: on_delete option must be a single field",
+				t.TypeName, relType, field.GoName))
+		}
+
+		rule := strings.ToUpper(onDelete[0])
+		if !isKnownFKRule(rule) {
+			internal.Warn.Printf("bun: %s %s %s: unknown on_delete rule %s",
+				t.TypeName, relType, field.GoName, rule)
+		}
+		return fmt.Sprintf("ON DELETE %s", rule)
+	}
+	return defaultOption
 }
 
 func (t *Table) hasOneRelation(field *Field) *Relation {
