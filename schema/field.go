@@ -44,13 +44,14 @@ func (f *Field) String() string {
 	return f.Name
 }
 
-func (f *Field) WithIndex(path []int) *Field {
-	if len(path) == 0 {
+func (f *Field) WithIndex(prefix []int) *Field {
+	if len(prefix) == 0 {
 		return f
 	}
-	clone := *f
-	clone.Index = makeIndex(path, f.Index)
-	return &clone
+
+	clone := f.Clone()
+	clone.Index = makeIndex(prefix, f.Index)
+	return clone
 }
 
 func (f *Field) Clone() *Field {

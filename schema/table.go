@@ -620,7 +620,7 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 	}
 
 	for _, f := range rel.BaseFields {
-		if f.Tag.HasOption("array") {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
 			rel.IsArray = true
 			break
 		}
@@ -694,7 +694,7 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 	}
 
 	for _, f := range rel.BaseFields {
-		if f.Tag.HasOption("array") {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
 			rel.IsArray = true
 			break
 		}
@@ -800,7 +800,7 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 	}
 
 	for _, f := range rel.BaseFields {
-		if f.Tag.HasOption("array") {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
 			rel.IsArray = true
 			break
 		}
@@ -897,7 +897,7 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 	rel.M2MJoinFields = rightRel.BaseFields
 
 	for _, f := range rel.M2MBaseFields {
-		if f.Tag.HasOption("array") {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
 			rel.IsArray = true
 			break
 		}
@@ -1111,6 +1111,24 @@ func (t *Table) fieldBySnakeName(snakeName string) *Field {
 		}
 	}
 
+	// Check for fields in embedded structs if we have a StructMap
+	if t.StructMap != nil {
+		for _, structField := range t.StructMap {
+			if structField.Table != nil {
+				// Try to find the field in the embedded struct
+				if f := structField.Table.fieldBySnakeName(snakeName); f != nil {
+					return f.WithIndex(structField.Index)
+				}
+			}
+		}
+	}
+
 	// Try searching by exact GoName match in all fields (including embedded)
 	return t.fieldByGoName(camelName)
+}
+
+// isArrayType checks if a type is a slice or array
+func isArrayType(typ reflect.Type) bool {
+	kind := typ.Kind()
+	return kind == reflect.Slice || kind == reflect.Array
 }
