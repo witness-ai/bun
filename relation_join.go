@@ -539,10 +539,22 @@ func (j *relationJoin) singleRecordQuery(q *SelectQuery) *SelectQuery {
 
 // hasOneQuery builds a query for has-one relations
 func (j *relationJoin) hasOneQuery(q *SelectQuery) *SelectQuery {
+	// If this is an array relation, use the array-specific query builder
+	if j.Relation.IsArray {
+		return j.singleRecordQuery(q)
+	}
+	
+	// For non-array relations, use standard query approach
 	return j.singleRecordQuery(q)
 }
 
 // belongsToQuery builds a query for belongs-to relations
 func (j *relationJoin) belongsToQuery(q *SelectQuery) *SelectQuery {
+	// If this is an array relation, use the array-specific query builder
+	if j.Relation.IsArray {
+		return j.singleRecordQuery(q)
+	}
+	
+	// For non-array relations, use standard query approach
 	return j.singleRecordQuery(q)
 }
