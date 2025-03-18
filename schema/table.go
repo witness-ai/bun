@@ -1117,10 +1117,10 @@ func (t *Table) fieldBySnakeName(snakeName string) *Field {
 				// This is an embedded struct with extend/embed tag
 				if embeddedTable, ok := t.StructMap[f.Name]; ok && embeddedTable.Table != nil {
 					if embField := embeddedTable.Table.fieldBySnakeName(snakeName); embField != nil {
-						// Create a copy with merged index path
-						clone := *embField
+						// Create a properly cloned field with merged index path
+						clone := embField.Clone()
 						clone.Index = makeIndex(f.Index, embField.Index)
-						return &clone
+						return clone
 					}
 				}
 			}
@@ -1132,9 +1132,30 @@ func (t *Table) fieldBySnakeName(snakeName string) *Field {
 		for _, structField := range t.StructMap {
 			if structField.Table != nil {
 				if f := structField.Table.fieldBySnakeName(snakeName); f != nil {
-					clone := *f
+					clone := f.Clone()
 					clone.Index = makeIndex(structField.Index, f.Index)
-					return &clone
+					return clone
+				}
+			}
+		}
+	}
+
+	// Special fallback for group_ids in a User model with extends
+	if snakeName == "group_ids" && t.TypeName == "User" {
+		// Search recursively in all embedded fields for GroupIDs
+		for _, field := range t.Fields {
+			if field.Tag.HasOption("extend") {
+				// Check the embedded struct fields
+				if embTable, ok := t.StructMap[field.Name]; ok && embTable.Table != nil {
+					// Look for a field named GroupIDs in the embedded model
+					for _, embField := range embTable.Table.Fields {
+						if embField.GoName == "GroupIDs" || string(embField.SQLName) == "group_ids" {
+							// Create a copy with merged index
+							clone := *embField
+							clone.Index = makeIndex(field.Index, embField.Index)
+							return &clone
+						}
+					}
 				}
 			}
 		}
