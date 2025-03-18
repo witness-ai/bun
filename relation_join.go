@@ -3,6 +3,7 @@ package bun
 import (
 	"context"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/uptrace/bun/dialect"
@@ -328,13 +329,27 @@ func (j *relationJoin) appendHasOneJoin(
 		if i > 0 {
 			b = append(b, " AND "...)
 		}
+
 		b = j.appendAlias(fmter, b)
 		b = append(b, '.')
 		b = append(b, j.Relation.JoinFields[i].SQLName...)
-		b = append(b, " = "...)
-		b = j.appendBaseAlias(fmter, b)
-		b = append(b, '.')
-		b = append(b, baseField.SQLName...)
+
+		// Check if the base field is an array type and use ANY operator
+		if baseField.Tag.HasOption("array") ||
+			strings.Contains(baseField.UserSQLType, "[]") ||
+			strings.Contains(baseField.DiscoveredSQLType, "[]") ||
+			(baseField.IndirectType.Kind() == reflect.Slice || baseField.IndirectType.Kind() == reflect.Array) {
+			b = append(b, " = ANY("...)
+			b = j.appendBaseAlias(fmter, b)
+			b = append(b, '.')
+			b = append(b, baseField.SQLName...)
+			b = append(b, ')')
+		} else {
+			b = append(b, " = "...)
+			b = j.appendBaseAlias(fmter, b)
+			b = append(b, '.')
+			b = append(b, baseField.SQLName...)
+		}
 	}
 	b = append(b, ')')
 
