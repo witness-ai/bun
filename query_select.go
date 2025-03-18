@@ -468,7 +468,15 @@ func (q *SelectQuery) selectJoins(ctx context.Context, joins []relationJoin) err
 
 		switch j.Relation.Type {
 		case schema.HasOneRelation, schema.BelongsToRelation:
-			err = q.selectJoins(ctx, j.JoinModel.getJoins())
+			if j.Relation.IsArray && q.db.dialect.Name() == dialect.PG {
+				if j.Relation.Type == schema.BelongsToRelation {
+					err = j.selectSingleRecord(ctx, q.db.NewSelect().Conn(q.conn), j.belongsToQuery)
+				} else {
+					err = j.selectSingleRecord(ctx, q.db.NewSelect().Conn(q.conn), j.hasOneQuery)
+				}
+			} else {
+				err = q.selectJoins(ctx, j.JoinModel.getJoins())
+			}
 		case schema.HasManyRelation:
 			err = j.selectMany(ctx, q.db.NewSelect().Conn(q.conn))
 		case schema.ManyToManyRelation:

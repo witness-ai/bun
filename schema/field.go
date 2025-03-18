@@ -134,3 +134,8 @@ func (f *Field) ScanWithCheck(fv reflect.Value, src interface{}) error {
 func (f *Field) SkipUpdate() bool {
 	return f.Tag.HasOption("skipupdate")
 }
+
+// IsArrayRelation returns true if the field is a relation stored as a PostgreSQL array.
+func (f *Field) IsArrayRelation() bool {
+	return f.Tag.HasOption("array")
+}

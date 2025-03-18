@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun/internal/tagparser"
 )
 
 func TestTable(t *testing.T) {
@@ -245,4 +246,91 @@ func TestTable(t *testing.T) {
 
 		require.Equal(t, table.FieldMap["foo"].SQLName, table.FieldMap["alt_name"].SQLName)
 	})
+}
+
+func TestArrayRelations(t *testing.T) {
+	type Role struct {
+		ID   int64 `bun:",pk,autoincrement"`
+		Name string
+	}
+
+	type User struct {
+		ID      int64 `bun:",pk,autoincrement"`
+		Name    string
+		RoleIDs []int64 `bun:",array"`
+
+		// Tagged with array for PostgreSQL array relation
+		Roles []Role `bun:",array,rel:has-many,join:role_ids=id"`
+	}
+
+	// Test that the array tag is correctly parsed
+	userType := reflect.TypeOf(User{})
+	rolesField, ok := userType.FieldByName("Roles")
+	require.True(t, ok, "Roles field must be found")
+
+	tag := tagparser.Parse(rolesField.Tag.Get("bun"))
+	require.True(t, tag.HasOption("array"), "array tag option should be recognized")
+	require.Equal(t, "has-many", tag.Options["rel"][0], "relation type should be parsed correctly")
+
+	// Test if the Field.IsArrayRelation() method works correctly
+	field := &Field{
+		Tag: tag,
+	}
+	require.True(t, field.IsArrayRelation(), "IsArrayRelation should return true for array-tagged fields")
+
+	// Manually create a Relation to test the IsArray flag
+	rel := &Relation{
+		Type: HasManyRelation,
+		Field: &Field{
+			Tag: tag,
+		},
+		IsArray: field.IsArrayRelation(),
+	}
+
+	// Verify that the IsArray flag is set
+	require.True(t, rel.IsArray, "IsArray flag should be set on array relations")
+}
+
+func TestArrayRelationsTypes(t *testing.T) {
+	// Test has-one array relation
+	type Post struct {
+		ID    int64  `bun:",pk,autoincrement"`
+		Title string
+	}
+
+	type Author struct {
+		ID         int64   `bun:",pk,autoincrement"`
+		Name       string
+		PostIDs    []int64 `bun:",array"`
+		
+		// Has-one relation with array
+		FeaturedPost *Post `bun:",array,rel:has-one,join:post_ids=id"`
+	}
+
+	// Test has-one array relation
+	authorType := reflect.TypeOf(Author{})
+	postField, ok := authorType.FieldByName("FeaturedPost")
+	require.True(t, ok, "FeaturedPost field must be found")
+
+	postTag := tagparser.Parse(postField.Tag.Get("bun"))
+	require.True(t, postTag.HasOption("array"), "array tag option should be recognized")
+	require.Equal(t, "has-one", postTag.Options["rel"][0], "relation type should be parsed correctly")
+
+	// Test belongs-to array relation
+	type Comment struct {
+		ID      int64   `bun:",pk,autoincrement"`
+		Content string
+		PostIDs []int64 `bun:",array"`
+		
+		// Belongs-to relation with array
+		Post    *Post   `bun:",array,rel:belongs-to,join:post_ids=id"`
+	}
+
+	commentType := reflect.TypeOf(Comment{})
+	commentPostField, ok := commentType.FieldByName("Post")
+	require.True(t, ok, "Post field must be found")
+
+	commentPostTag := tagparser.Parse(commentPostField.Tag.Get("bun"))
+	require.True(t, commentPostTag.HasOption("array"), "array tag option should be recognized")
+	require.Equal(t, "belongs-to", commentPostTag.Options["rel"][0], "relation type should be parsed correctly")
 }

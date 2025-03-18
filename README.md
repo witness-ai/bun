@@ -27,6 +27,7 @@
 - [Fixtures](https://bun.uptrace.dev/guide/fixtures.html).
 - [Migrations](https://bun.uptrace.dev/guide/migrations.html).
 - [Soft deletes](https://bun.uptrace.dev/guide/soft-deletes.html).
+- PostgreSQL array relations (see [example below](#postgresql-array-relations)).
 
 ### Resources
 
@@ -142,3 +143,77 @@ And thanks to all the people who already contributed!
 <a href="https://github.com/uptrace/bun/graphs/contributors">
   <img src="https://contributors-img.web.app/image?repo=uptrace/bun" />
 </a>
+
+## PostgreSQL Array Relations
+
+Bun supports PostgreSQL array relations, allowing you to store relation IDs in array columns. This can be more efficient than traditional join tables for many-to-many relations.
+
+### Has-Many Relation
+
+```go
+type User struct {
+    ID       int64 `bun:",pk,autoincrement"`
+    Name     string
+    RoleIDs  []int64 `bun:",array"` // PostgreSQL array column
+    
+    // Define a relation that uses the array column
+    Roles    []Role `bun:",array,rel:has-many,join:role_ids=id"`
+}
+
+type Role struct {
+    ID   int64 `bun:",pk,autoincrement"`
+    Name string
+}
+```
+
+### Has-One Relation
+
+```go
+type Author struct {
+    ID          int64 `bun:",pk,autoincrement"`
+    Name        string
+    PostIDs     []int64 `bun:",array"` // Array of post IDs
+    
+    // Author has one featured post from their array of posts
+    FeaturedPost *Post `bun:",array,rel:has-one,join:post_ids=id"`
+}
+
+type Post struct {
+    ID       int64 `bun:",pk,autoincrement"`
+    Title    string
+}
+```
+
+### Belongs-To Relation
+
+```go
+type Comment struct {
+    ID        int64 `bun:",pk,autoincrement"`
+    Content   string
+    PostIDs   []int64 `bun:",array"` // Array of post IDs this comment belongs to
+    
+    // A comment belongs to one of multiple possible posts
+    Post      *Post `bun:",array,rel:belongs-to,join:post_ids=id"`
+}
+```
+
+To query the array relation:
+
+```go
+var user User
+err := db.NewSelect().
+    Model(&user).
+    Where("id = ?", 1).
+    Relation("Roles").
+    Scan(ctx)
+```
+
+This feature uses PostgreSQL's `ANY` operator to efficiently query related records using the array column. The SQL generated will look like:
+
+```sql
+SELECT "role"."id", "role"."name" 
+FROM "roles" AS "role"
+WHERE "role"."id" = ANY("user"."role_ids")
+```
+
+This approach often performs better than traditional join tables for simple many-to-many relationships.

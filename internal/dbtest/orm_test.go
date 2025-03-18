@@ -13,6 +13,7 @@ import (
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dbfixture"
+	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/feature"
 )
 
@@ -32,6 +33,8 @@ func TestORM(t *testing.T) {
 		{testM2MRelationExcludeColumn},
 		{testRelationBelongsToSelf},
 		{testCompositeHasMany},
+		{testArrayRelations},
+		{testArrayM2MRelations},
 	}
 
 	testEachDB(t, func(t *testing.T, dbName string, db *bun.DB) {
@@ -439,6 +442,368 @@ func testCompositeHasMany(t *testing.T, db *bun.DB) {
 	require.NoError(t, err)
 	require.Equal(t, "hr", department.No)
 	require.Equal(t, 2, len(department.Employees))
+}
+
+func testArrayRelations(t *testing.T, db *bun.DB) {
+	// Skip test for non-PostgreSQL dialects
+	if db.Dialect().Name() != dialect.PG {
+		t.Skip("array relations are only supported in PostgreSQL")
+	}
+
+	// Define models with array relation
+	type Role struct {
+		ID   int64 `bun:",pk,autoincrement"`
+		Name string
+	}
+
+	type User struct {
+		ID      int64 `bun:",pk,autoincrement"`
+		Name    string
+		RoleIDs []int64 `bun:",array"` // PostgreSQL array column
+
+		// Define a relation that uses the array column
+		Roles []Role `bun:",array,rel:has-many,join:role_ids=id"`
+	}
+
+	// Create schema for test
+	_, err := db.NewCreateTable().Model((*Role)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = db.NewCreateTable().Model((*User)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	// Insert test data
+	roles := []Role{
+		{ID: 1, Name: "Admin"},
+		{ID: 2, Name: "Moderator"},
+		{ID: 3, Name: "User"},
+	}
+	_, err = db.NewInsert().Model(&roles).Exec(ctx)
+	require.NoError(t, err)
+
+	users := []User{
+		{ID: 1, Name: "John", RoleIDs: []int64{1, 2}},     // Admin, Moderator
+		{ID: 2, Name: "Jane", RoleIDs: []int64{2, 3}},     // Moderator, User
+		{ID: 3, Name: "Bob", RoleIDs: []int64{3}},         // User only
+		{ID: 4, Name: "Alice", RoleIDs: []int64{1, 2, 3}}, // All roles
+	}
+	_, err = db.NewInsert().Model(&users).Exec(ctx)
+	require.NoError(t, err)
+
+	// Test 1: Query user with roles via array relation
+	var user User
+	err = db.NewSelect().
+		Model(&user).
+		Where("id = ?", 1).
+		Relation("Roles").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, "John", user.Name)
+	require.Len(t, user.Roles, 2, "Should have loaded 2 roles")
+
+	// Check that we got the right roles
+	roleNames := []string{user.Roles[0].Name, user.Roles[1].Name}
+	require.Contains(t, roleNames, "Admin")
+	require.Contains(t, roleNames, "Moderator")
+
+	// Test 2: Query all users with roles
+	var allUsers []User
+	err = db.NewSelect().
+		Model(&allUsers).
+		Relation("Roles").
+		Order("id ASC").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Len(t, allUsers, 4)
+
+	// Verify first user's roles
+	require.Len(t, allUsers[0].Roles, 2)
+
+	// Verify second user's roles
+	require.Len(t, allUsers[1].Roles, 2)
+
+	// Verify third user's roles
+	require.Len(t, allUsers[2].Roles, 1)
+	require.Equal(t, "User", allUsers[2].Roles[0].Name)
+
+	// Verify fourth user's roles
+	require.Len(t, allUsers[3].Roles, 3)
+
+	// Test 3: Query users with a specific role (using WHERE EXISTS)
+	var adminUsers []User
+	err = db.NewSelect().
+		Model(&adminUsers).
+		Where("1 = ANY(role_ids)"). // Users with Admin role (ID 1)
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Len(t, adminUsers, 2) // John and Alice
+
+	// Test 4: Define models for has-one and belongs-to with array relations
+	type Post struct {
+		ID       int64 `bun:",pk,autoincrement"`
+		Title    string
+		AuthorID int64
+	}
+
+	type Comment struct {
+		ID      int64 `bun:",pk,autoincrement"`
+		Content string
+		PostIDs []int64 `bun:",array"` // Array of post IDs
+
+		// A comment belongs to one of multiple possible posts (array-based belongs-to)
+		Post *Post `bun:",array,rel:belongs-to,join:post_ids=id"`
+	}
+
+	type Author struct {
+		ID      int64 `bun:",pk,autoincrement"`
+		Name    string
+		PostIDs []int64 `bun:",array"` // Array of post IDs
+
+		// Author has one featured post stored in an array (array-based has-one)
+		FeaturedPost *Post `bun:",array,rel:has-one,join:post_ids=id"`
+	}
+
+	// Create schema
+	_, err = db.NewCreateTable().Model((*Post)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = db.NewCreateTable().Model((*Comment)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = db.NewCreateTable().Model((*Author)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	// Insert test data
+	posts := []Post{
+		{ID: 1, Title: "PostgreSQL Arrays", AuthorID: 1},
+		{ID: 2, Title: "Go Programming", AuthorID: 1},
+		{ID: 3, Title: "Database Design", AuthorID: 2},
+	}
+	_, err = db.NewInsert().Model(&posts).Exec(ctx)
+	require.NoError(t, err)
+
+	authors := []Author{
+		{ID: 1, Name: "John Doe", PostIDs: []int64{1, 2}}, // Has posts 1 and 2
+		{ID: 2, Name: "Jane Smith", PostIDs: []int64{3}},  // Has post 3
+	}
+	_, err = db.NewInsert().Model(&authors).Exec(ctx)
+	require.NoError(t, err)
+
+	comments := []Comment{
+		{ID: 1, Content: "Great article!", PostIDs: []int64{1}},    // Belongs to post 1
+		{ID: 2, Content: "Interesting topic", PostIDs: []int64{2}}, // Belongs to post 2
+		{ID: 3, Content: "Multiple posts", PostIDs: []int64{1, 3}}, // Belongs to posts 1 and 3
+	}
+	_, err = db.NewInsert().Model(&comments).Exec(ctx)
+	require.NoError(t, err)
+
+	// Test has-one with array: Get author with featured post
+	var author Author
+	err = db.NewSelect().
+		Model(&author).
+		Where("id = ?", 1).
+		Relation("FeaturedPost").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.NotNil(t, author.FeaturedPost)
+	require.Equal(t, "PostgreSQL Arrays", author.FeaturedPost.Title)
+
+	// Test belongs-to with array: Get comment with post
+	var comment Comment
+	err = db.NewSelect().
+		Model(&comment).
+		Where("id = ?", 1).
+		Relation("Post").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.NotNil(t, comment.Post)
+	require.Equal(t, "PostgreSQL Arrays", comment.Post.Title)
+
+	// Test 5: Test empty array case
+	emptyAuthor := Author{
+		ID:      5,
+		Name:    "Empty Array Author",
+		PostIDs: []int64{}, // Empty array
+	}
+	_, err = db.NewInsert().Model(&emptyAuthor).Exec(ctx)
+	require.NoError(t, err)
+
+	// Load empty array author with relation
+	var emptyArrayAuthor Author
+	err = db.NewSelect().
+		Model(&emptyArrayAuthor).
+		Where("id = ?", 5).
+		Relation("FeaturedPost").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Nil(t, emptyArrayAuthor.FeaturedPost, "Featured post should be nil for empty array")
+
+	// Test 6: Test SQL generation with ANY operator
+	// We can't directly check the SQL, but we can check it works correctly
+	// by querying based on array contents
+	type PostWithUser struct {
+		ID     int64 `bun:",pk,autoincrement"`
+		Title  string
+		UserID int64
+
+		// User relation
+		User *User
+	}
+
+	// Create tables
+	_, err = db.NewCreateTable().Model((*PostWithUser)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	// Insert data
+	postsWithUsers := []PostWithUser{
+		{ID: 10, Title: "Post for User 1", UserID: 1},
+		{ID: 11, Title: "Post for User 2", UserID: 2},
+		{ID: 12, Title: "Post for User 3", UserID: 3},
+	}
+	_, err = db.NewInsert().Model(&postsWithUsers).Exec(ctx)
+	require.NoError(t, err)
+
+	// Query using SQL ANY in a WHERE clause to verify it works correctly
+	var usersWithPosts []User
+	err = db.NewSelect().
+		Model(&usersWithPosts).
+		Where("id = ANY(?)", []int64{1, 3}). // Using ANY directly in SQL
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Len(t, usersWithPosts, 2, "Should find 2 users")
+	require.Equal(t, "John", usersWithPosts[0].Name, "First user should be John")
+	require.Equal(t, "Bob", usersWithPosts[1].Name, "Second user should be Bob")
+
+	// Test 7: NULL array handling
+	// Create a user with NULL array (we'll use a direct SQL query for this)
+	_, err = db.Exec("INSERT INTO authors (id, name) VALUES (6, 'Null Array Author')")
+	require.NoError(t, err)
+
+	// Query the null array author
+	var nullArrayAuthor Author
+	err = db.NewSelect().
+		Model(&nullArrayAuthor).
+		Where("id = ?", 6).
+		Relation("FeaturedPost").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Nil(t, nullArrayAuthor.FeaturedPost, "Featured post should be nil for NULL array")
+	require.Empty(t, nullArrayAuthor.PostIDs, "PostIDs should be empty for NULL array")
+}
+
+func testArrayM2MRelations(t *testing.T, db *bun.DB) {
+	// Skip test for non-PostgreSQL dialects
+	if db.Dialect().Name() != dialect.PG {
+		t.Skip("array relations are only supported in PostgreSQL")
+	}
+
+	// Define models with array relation simulating many-to-many
+	type Tag struct {
+		ID   int64 `bun:",pk,autoincrement"`
+		Name string
+	}
+
+	type Article struct {
+		ID     int64 `bun:",pk,autoincrement"`
+		Title  string
+		TagIDs []int64 `bun:",array"` // PostgreSQL array column instead of join table
+
+		// Define an array-based relation that replaces traditional M2M
+		Tags []Tag `bun:",array,rel:has-many,join:tag_ids=id"`
+	}
+
+	// Create schema for test
+	_, err := db.NewCreateTable().Model((*Tag)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = db.NewCreateTable().Model((*Article)(nil)).IfNotExists().Exec(ctx)
+	require.NoError(t, err)
+
+	// Insert test data
+	tags := []Tag{
+		{ID: 1, Name: "Technology"},
+		{ID: 2, Name: "Programming"},
+		{ID: 3, Name: "Database"},
+		{ID: 4, Name: "Go"},
+		{ID: 5, Name: "PostgreSQL"},
+	}
+	_, err = db.NewInsert().Model(&tags).Exec(ctx)
+	require.NoError(t, err)
+
+	articles := []Article{
+		{ID: 1, Title: "Go Programming", TagIDs: []int64{1, 2, 4}},
+		{ID: 2, Title: "PostgreSQL Arrays", TagIDs: []int64{1, 3, 5}},
+		{ID: 3, Title: "Go with PostgreSQL", TagIDs: []int64{1, 2, 3, 4, 5}},
+	}
+	_, err = db.NewInsert().Model(&articles).Exec(ctx)
+	require.NoError(t, err)
+
+	// Test 1: Query articles with their tags
+	var articles1 []Article
+	err = db.NewSelect().
+		Model(&articles1).
+		Relation("Tags").
+		Order("id ASC").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Len(t, articles1, 3)
+
+	// Verify the first article's tags
+	require.Len(t, articles1[0].Tags, 3)
+	tagNames := make([]string, len(articles1[0].Tags))
+	for i, tag := range articles1[0].Tags {
+		tagNames[i] = tag.Name
+	}
+	require.Contains(t, tagNames, "Technology")
+	require.Contains(t, tagNames, "Programming")
+	require.Contains(t, tagNames, "Go")
+
+	// Verify the third article has all tags
+	require.Len(t, articles1[2].Tags, 5)
+
+	// Test 2: Query a specific article with tags
+	var article Article
+	err = db.NewSelect().
+		Model(&article).
+		Where("id = ?", 2).
+		Relation("Tags").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, "PostgreSQL Arrays", article.Title)
+	require.Len(t, article.Tags, 3)
+
+	// Check specific tags
+	var hasPostgresTag bool
+	for _, tag := range article.Tags {
+		if tag.Name == "PostgreSQL" {
+			hasPostgresTag = true
+			break
+		}
+	}
+	require.True(t, hasPostgresTag, "Article should have PostgreSQL tag")
+
+	// Test 3: Find articles with a specific tag using the ANY operator
+	var postgresArticles []Article
+	err = db.NewSelect().
+		Model(&postgresArticles).
+		Where("5 = ANY(tag_ids)"). // Articles with PostgreSQL tag (ID 5)
+		Order("id ASC").
+		Scan(ctx)
+
+	require.NoError(t, err)
+	require.Len(t, postgresArticles, 2) // Should find 2 articles
+	require.Equal(t, "PostgreSQL Arrays", postgresArticles[0].Title)
+	require.Equal(t, "Go with PostgreSQL", postgresArticles[1].Title)
 }
 
 type Genre struct {

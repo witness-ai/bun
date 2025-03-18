@@ -28,6 +28,9 @@ type Relation struct {
 	M2MTable      *Table
 	M2MBaseFields []*Field
 	M2MJoinFields []*Field
+
+	// IsArray indicates if the relation is stored as a PostgreSQL array
+	IsArray bool
 }
 
 // References returns true if the table to which the Relation belongs needs to declare a foreign key constraint to create the relation.

@@ -536,6 +536,7 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 		Type:      BelongsToRelation,
 		Field:     field,
 		JoinTable: joinTable,
+		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
@@ -630,6 +631,7 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 		Type:      HasOneRelation,
 		Field:     field,
 		JoinTable: joinTable,
+		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
@@ -701,6 +703,7 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 		Type:      HasManyRelation,
 		Field:     field,
 		JoinTable: joinTable,
+		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
@@ -816,6 +819,7 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 		Field:     field,
 		JoinTable: joinTable,
 		M2MTable:  m2mTable,
+		IsArray:   field.IsArrayRelation(),
 	}
 
 	if field.Tag.HasOption("join_on") {
