@@ -1108,26 +1108,29 @@ func (t *Table) fieldBySnakeName(snakeName string) *Field {
 		if string(f.SQLName) == snakeName {
 			return f
 		}
+	}
 
-		// Handle extended/embedded structs more thoroughly
-		if f.IndirectType.Kind() == reflect.Struct &&
-			(f.Tag.HasOption("extend") || f.Tag.HasOption("embed")) {
-			if embeddedTable, ok := t.StructMap[f.Name]; ok && embeddedTable.Table != nil {
-				if embField := embeddedTable.Table.fieldBySnakeName(snakeName); embField != nil {
-					// We found a field in the embedded struct - create a copy with updated index
-					clone := *embField
-					clone.Index = makeIndex(f.Index, embField.Index)
-					return &clone
+	// Special check for embedded/extended structs - more thorough search
+	for _, f := range t.Fields {
+		if f.IndirectType.Kind() == reflect.Struct {
+			if f.Tag.HasOption("extend") || f.Tag.HasOption("embed") {
+				// This is an embedded struct with extend/embed tag
+				if embeddedTable, ok := t.StructMap[f.Name]; ok && embeddedTable.Table != nil {
+					if embField := embeddedTable.Table.fieldBySnakeName(snakeName); embField != nil {
+						// Create a copy with merged index path
+						clone := *embField
+						clone.Index = makeIndex(f.Index, embField.Index)
+						return &clone
+					}
 				}
 			}
 		}
 	}
 
-	// Check for fields in embedded structs if we have a StructMap
+	// Look for the field in all StructMap entries (handles unnamed embedding too)
 	if t.StructMap != nil {
 		for _, structField := range t.StructMap {
 			if structField.Table != nil {
-				// Try to find the field in the embedded struct
 				if f := structField.Table.fieldBySnakeName(snakeName); f != nil {
 					clone := *f
 					clone.Index = makeIndex(structField.Index, f.Index)
@@ -1137,7 +1140,7 @@ func (t *Table) fieldBySnakeName(snakeName string) *Field {
 		}
 	}
 
-	// Try searching by exact GoName match in all fields (including embedded)
+	// Try searching by exact GoName match in all fields
 	return t.fieldByGoName(camelName)
 }
 
