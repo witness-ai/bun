@@ -542,15 +542,6 @@ func newStructModel(j *relationJoin) TableModel {
 
 // singleRecordQuery builds a query for has-one or belongs-to relations using array columns
 func (j *relationJoin) singleRecordQuery(q *SelectQuery) *SelectQuery {
-	// Output some debug information about this relation
-	internal.Warn.Printf("Processing relation: %s.%s (type: %s, isArray: %v)",
-		j.BaseModel.Table().TypeName, j.Relation.Field.GoName, j.Relation.Type, j.Relation.IsArray)
-
-	for _, f := range j.Relation.BaseFields {
-		internal.Warn.Printf("  Base field: %s (SQL: %s) Type: %s",
-			f.GoName, f.SQLName, f.IndirectType.String())
-	}
-
 	// Create a model for the related record
 	structModel := newStructModel(j)
 	if structModel == nil {
@@ -558,26 +549,6 @@ func (j *relationJoin) singleRecordQuery(q *SelectQuery) *SelectQuery {
 	}
 
 	q = q.Model(structModel)
-
-	// If this is a belongs-to relation with Group, apply special hardcoded case
-	if j.Relation.Type == schema.BelongsToRelation && j.Relation.Field.GoName == "Group" {
-		// Generate explicit ANY syntax for the relation
-		baseTable := j.BaseModel.Table()
-		joinTable := j.JoinModel.Table()
-
-		// This hardcoded SQL will use the correct field names regardless of how they're defined
-		q = q.Where("?.? = ANY(?.group_ids)",
-			joinTable.SQLAlias, joinTable.PKs[0].SQLName,
-			baseTable.SQLAlias)
-
-		// Add columns selection
-		b := make([]byte, 0, 32)
-		b = appendColumns(b, joinTable.SQLAlias, joinTable.Fields)
-		q = q.ColumnExpr(internal.String(b))
-
-		j.applyTo(q)
-		return q
-	}
 
 	// Normal case using buildArrayQuery
 	return j.buildArrayQuery(q, j.Relation.BaseFields)
