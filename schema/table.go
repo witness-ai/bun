@@ -576,17 +576,7 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 		for i, baseColumn := range baseColumns {
 			joinColumn := joinColumns[i]
 
-			var f *Field
-
-			// First look up the field by the exact column name
-			f = t.FieldMap[baseColumn]
-
-			// If not found, try converting snake_case to CamelCase
-			if f == nil {
-				camelCaseFieldName := internal.ToExported(internal.CamelCased(baseColumn))
-				f = t.FieldMap[camelCaseFieldName]
-			}
-
+			f := t.fieldBySnakeName(baseColumn)
 			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
 			} else {
@@ -660,17 +650,7 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 		for i, baseColumn := range baseColumns {
 			joinColumn := joinColumns[i]
 
-			var f *Field
-
-			// First look up the field by the exact column name
-			f = t.FieldMap[baseColumn]
-
-			// If not found, try converting snake_case to CamelCase
-			if f == nil {
-				camelCaseFieldName := internal.ToExported(internal.CamelCased(baseColumn))
-				f = t.FieldMap[camelCaseFieldName]
-			}
-
+			f := t.fieldBySnakeName(baseColumn)
 			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
 			} else {
@@ -758,17 +738,7 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 				continue
 			}
 
-			var f *Field
-
-			// First look up the field by the exact column name
-			f = t.FieldMap[baseColumn]
-
-			// If not found, try converting snake_case to CamelCase
-			if f == nil {
-				camelCaseFieldName := internal.ToExported(internal.CamelCased(baseColumn))
-				f = t.FieldMap[camelCaseFieldName]
-			}
-
+			f := t.fieldBySnakeName(baseColumn)
 			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
 			} else {
@@ -796,13 +766,13 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 
 		for _, pk := range t.PKs {
 			joinColumn := fkPrefix + pk.Name
-			if fk := joinTable.FieldMap[joinColumn]; fk != nil {
-				rel.JoinFields = append(rel.JoinFields, fk)
+			if f := joinTable.FieldMap[joinColumn]; f != nil {
+				rel.JoinFields = append(rel.JoinFields, f)
 				continue
 			}
 
-			if fk := joinTable.FieldMap[pk.Name]; fk != nil {
-				rel.JoinFields = append(rel.JoinFields, fk)
+			if f := joinTable.FieldMap[pk.Name]; f != nil {
+				rel.JoinFields = append(rel.JoinFields, f)
 				continue
 			}
 
@@ -890,31 +860,29 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 		rightColumn = joinTable.TypeName
 	}
 
-	leftField := m2mTable.fieldByGoName(leftColumn)
+	leftField := m2mTable.fieldBySnakeName(leftColumn)
 	if leftField == nil {
-		// Try converting from snake_case to CamelCase
-		camelCaseFieldName := internal.ToExported(internal.CamelCased(leftColumn))
-		leftField = m2mTable.fieldByGoName(camelCaseFieldName)
+		// Try with our new snake case conversion helper
+		leftField = m2mTable.fieldBySnakeName(leftColumn)
 
 		if leftField == nil {
 			panic(fmt.Errorf(
 				"bun: %s many-to-many %s: %s must have field %s "+
-					"(to override, use tag join:LeftField=RightField on field %s.%s",
+					"(to override, use tag join:LeftField=RightField on field %s.%s)",
 				t.TypeName, field.GoName, m2mTable.TypeName, leftColumn, t.TypeName, field.GoName,
 			))
 		}
 	}
 
-	rightField := m2mTable.fieldByGoName(rightColumn)
+	rightField := m2mTable.fieldBySnakeName(rightColumn)
 	if rightField == nil {
-		// Try converting from snake_case to CamelCase
-		camelCaseFieldName := internal.ToExported(internal.CamelCased(rightColumn))
-		rightField = m2mTable.fieldByGoName(camelCaseFieldName)
+		// Try with our new snake case conversion helper
+		rightField = m2mTable.fieldBySnakeName(rightColumn)
 
 		if rightField == nil {
 			panic(fmt.Errorf(
 				"bun: %s many-to-many %s: %s must have field %s "+
-					"(to override, use tag join:LeftField=RightField on field %s.%s",
+					"(to override, use tag join:LeftField=RightField on field %s.%s)",
 				t.TypeName, field.GoName, m2mTable.TypeName, rightColumn, t.TypeName, field.GoName,
 			))
 		}
@@ -1002,7 +970,6 @@ func isKnownFieldOption(name string) bool {
 		"unique",
 		"soft_delete",
 		"scanonly",
-		"skipupdate",
 
 		"pk",
 		"autoincrement",
@@ -1121,4 +1088,29 @@ func makeIndex(a, b []int) []int {
 	dest = append(dest, a...)
 	dest = append(dest, b...)
 	return dest
+}
+
+// fieldBySnakeName looks up a field by its SQL snake_case name.
+// It first tries direct match, then tries converting to CamelCase.
+func (t *Table) fieldBySnakeName(snakeName string) *Field {
+	// First try direct lookup in FieldMap (works if field name is same as column name)
+	if f, ok := t.FieldMap[snakeName]; ok {
+		return f
+	}
+
+	// Try converting snake_case to CamelCase
+	camelName := internal.ToExported(internal.CamelCased(snakeName))
+	if f, ok := t.FieldMap[camelName]; ok {
+		return f
+	}
+
+	// Try iterating through all fields to check SQLName
+	for _, f := range t.allFields {
+		if string(f.SQLName) == snakeName {
+			return f
+		}
+	}
+
+	// Try searching by exact GoName match in all fields (including embedded)
+	return t.fieldByGoName(camelName)
 }
