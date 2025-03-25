@@ -3,8 +3,10 @@ package bun
 import (
 	"context"
 	"reflect"
+	"strings"
 	"time"
 
+	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/feature"
 	"github.com/uptrace/bun/internal"
 	"github.com/uptrace/bun/schema"
@@ -61,6 +63,12 @@ func (j *relationJoin) manyQuery(q *SelectQuery) *SelectQuery {
 
 	q = q.Model(hasManyModel)
 
+	// Handle array relations differently - use PostgreSQL's ANY operator
+	if j.Relation.IsArrayRelation {
+		return j.buildArrayQuery(q, j.Relation.BaseFields)
+	}
+
+	// Standard approach for non-array relations
 	var where []byte
 
 	if q.db.dialect.Features().Has(feature.CompositeIn) {
@@ -166,22 +174,29 @@ func (j *relationJoin) selectM2M(ctx context.Context, q *SelectQuery) error {
 }
 
 func (j *relationJoin) m2mQuery(q *SelectQuery) *SelectQuery {
-	fmter := q.db.fmter
-
 	m2mModel := newM2MModel(j)
 	if m2mModel == nil {
 		return nil
 	}
+
 	q = q.Model(m2mModel)
 
-	index := j.JoinModel.parentIndex()
-	baseTable := j.BaseModel.Table()
+	// Handle array relations differently - use PostgreSQL's ANY operator
+	if j.Relation.IsArrayRelation {
+		return j.buildArrayQuery(q, j.Relation.M2MBaseFields)
+	}
 
-	if j.Relation.M2MTable != nil {
+	// Standard approach for non-array relations
+	baseTable := j.BaseModel.Table()
+	m2mTable := j.Relation.M2MTable
+
+	index := j.JoinModel.parentIndex()
+
+	if m2mTable != nil {
 		fields := append(j.Relation.M2MBaseFields, j.Relation.M2MJoinFields...)
 
 		b := make([]byte, 0, len(fields))
-		b = appendColumns(b, j.Relation.M2MTable.SQLAlias, fields)
+		b = appendColumns(b, m2mTable.SQLAlias, fields)
 
 		q = q.ColumnExpr(internal.String(b))
 	}
@@ -189,20 +204,20 @@ func (j *relationJoin) m2mQuery(q *SelectQuery) *SelectQuery {
 	//nolint
 	var join []byte
 	join = append(join, "JOIN "...)
-	join = fmter.AppendQuery(join, string(j.Relation.M2MTable.SQLName))
+	join = q.db.fmter.AppendQuery(join, string(m2mTable.SQLName))
 	join = append(join, " AS "...)
-	join = append(join, j.Relation.M2MTable.SQLAlias...)
+	join = append(join, m2mTable.SQLAlias...)
 	join = append(join, " ON ("...)
 	for i, col := range j.Relation.M2MBaseFields {
 		if i > 0 {
 			join = append(join, ", "...)
 		}
-		join = append(join, j.Relation.M2MTable.SQLAlias...)
+		join = append(join, m2mTable.SQLAlias...)
 		join = append(join, '.')
 		join = append(join, col.SQLName...)
 	}
 	join = append(join, ") IN ("...)
-	join = appendChildValues(fmter, join, j.BaseModel.rootValue(), index, baseTable.PKs)
+	join = appendChildValues(q.db.fmter, join, j.BaseModel.rootValue(), index, baseTable.PKs)
 	join = append(join, ")"...)
 	q = q.Join(internal.String(join))
 
@@ -211,7 +226,7 @@ func (j *relationJoin) m2mQuery(q *SelectQuery) *SelectQuery {
 		joinField := j.Relation.JoinFields[i]
 		q = q.Where("?.? = ?.?",
 			joinTable.SQLAlias, joinField.SQLName,
-			j.Relation.M2MTable.SQLAlias, m2mJoinField.SQLName)
+			m2mTable.SQLAlias, m2mJoinField.SQLName)
 	}
 
 	j.applyTo(q)
@@ -314,13 +329,27 @@ func (j *relationJoin) appendHasOneJoin(
 		if i > 0 {
 			b = append(b, " AND "...)
 		}
+
 		b = j.appendAlias(fmter, b)
 		b = append(b, '.')
 		b = append(b, j.Relation.JoinFields[i].SQLName...)
-		b = append(b, " = "...)
-		b = j.appendBaseAlias(fmter, b)
-		b = append(b, '.')
-		b = append(b, baseField.SQLName...)
+
+		// Check if the base field is an array type and use ANY operator
+		if baseField.Tag.HasOption("array") ||
+			strings.Contains(baseField.UserSQLType, "[]") ||
+			strings.Contains(baseField.DiscoveredSQLType, "[]") ||
+			(baseField.IndirectType.Kind() == reflect.Slice || baseField.IndirectType.Kind() == reflect.Array) {
+			b = append(b, " = ANY("...)
+			b = j.appendBaseAlias(fmter, b)
+			b = append(b, '.')
+			b = append(b, baseField.SQLName...)
+			b = append(b, ')')
+		} else {
+			b = append(b, " = "...)
+			b = j.appendBaseAlias(fmter, b)
+			b = append(b, '.')
+			b = append(b, baseField.SQLName...)
+		}
 	}
 	b = append(b, ')')
 
@@ -416,4 +445,133 @@ func appendMultiValues(
 	}
 	b = append(b, ')')
 	return b
+}
+
+func (j *relationJoin) buildArrayQuery(q *SelectQuery, fields []*schema.Field) *SelectQuery {
+	// Arrays are primarily supported in PostgreSQL
+	if q.db.dialect.Name() != dialect.PG {
+		return nil // Only PostgreSQL is fully supported for array relations
+	}
+
+	if len(fields) == 0 {
+		return nil // No fields to work with
+	}
+
+	joinTable := j.JoinModel.Table()
+	if len(joinTable.PKs) == 0 {
+		return nil // Join table has no PKs
+	}
+
+	baseTable := j.BaseModel.Table()
+
+	// For array relations, the fields parameter contains the reference fields parsed from the join tag
+	// The first field is the array field in the base table
+	arrayField := fields[0]
+
+	// The join field is the primary key of the join table
+	joinPK := joinTable.PKs[0]
+
+	// Double check that the SQL being generated includes ANY operator with correct tables and column references
+	q = q.Where("?.? = ANY(?.?)",
+		joinTable.SQLAlias, joinPK.SQLName,
+		baseTable.SQLAlias, arrayField.SQLName)
+
+	// Add LIMIT 1 for has-one relations
+	if j.Relation.Type == schema.HasOneRelation {
+		q = q.Limit(1)
+	}
+
+	j.applyTo(q)
+
+	// Apply appropriate columns based on relation type
+	switch j.Relation.Type {
+	case schema.HasOneRelation, schema.BelongsToRelation:
+		// For has-one and belongs-to, ensure we select the columns
+		b := make([]byte, 0, 32)
+		b = appendColumns(b, joinTable.SQLAlias, joinTable.Fields)
+		q = q.ColumnExpr(internal.String(b))
+	case schema.HasManyRelation, schema.ManyToManyRelation:
+		q = q.Apply(j.hasManyColumns)
+	}
+
+	return q
+}
+
+// selectSingleRecord handles loading a single relation (has-one or belongs-to) using array columns
+func (j *relationJoin) selectSingleRecord(ctx context.Context, q *SelectQuery, queryBuilder func(*SelectQuery) *SelectQuery) error {
+	q = queryBuilder(q)
+	if q == nil {
+		return nil
+	}
+	return q.Scan(ctx)
+}
+
+// newStructModel creates a struct model for a relation (used by has-one and belongs-to)
+func newStructModel(j *relationJoin) TableModel {
+	// For a relation to a single record, we need to create a struct model
+	// similar to how hasManyModel and m2mModel are created
+
+	// Create a new instance of the struct
+	strct := reflect.New(j.JoinModel.Table().Type).Elem()
+
+	// Get the DB reference from the join model, safely checking the type
+	var db *DB
+	if stm, ok := j.JoinModel.(*structTableModel); ok {
+		db = stm.db
+	} else {
+		// If it's not a structTableModel, fall back to using BaseModel
+		if stm, ok := j.BaseModel.(*structTableModel); ok {
+			db = stm.db
+		} else {
+			// Without a DB reference, we can't create a proper model
+			return nil
+		}
+	}
+
+	// Create a table model from the struct
+	tm := &structTableModel{
+		db:    db,
+		table: j.JoinModel.Table(),
+		rel:   j.Relation,
+		strct: strct,
+		dest:  strct.Addr().Interface(),
+	}
+
+	return tm
+}
+
+// singleRecordQuery builds a query for has-one or belongs-to relations using array columns
+func (j *relationJoin) singleRecordQuery(q *SelectQuery) *SelectQuery {
+	// Create a model for the related record
+	structModel := newStructModel(j)
+	if structModel == nil {
+		return nil
+	}
+
+	q = q.Model(structModel)
+
+	// Normal case using buildArrayQuery
+	return j.buildArrayQuery(q, j.Relation.BaseFields)
+}
+
+// hasOneQuery builds a query for has-one relations
+func (j *relationJoin) hasOneQuery(q *SelectQuery) *SelectQuery {
+	// If this is an array relation, use the array-specific query builder
+	if j.Relation.IsArrayRelation {
+		return j.singleRecordQuery(q)
+	}
+
+	// For non-array relations, use standard query approach
+	return j.singleRecordQuery(q)
+}
+
+// belongsToQuery builds a query for belongs-to relations
+func (j *relationJoin) belongsToQuery(q *SelectQuery) *SelectQuery {
+	// If this is an array relation, use the array-specific query builder
+	if j.Relation.IsArrayRelation {
+		return j.singleRecordQuery(q)
+	}
+
+	// For non-array relations, use standard query approach
+	return j.singleRecordQuery(q)
 }

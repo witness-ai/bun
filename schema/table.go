@@ -576,12 +576,15 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 		for i, baseColumn := range baseColumns {
 			joinColumn := joinColumns[i]
 
-			if f := t.FieldMap[baseColumn]; f != nil {
+			f := t.fieldBySnakeName(baseColumn)
+
+			if f != nil {
 				rel.BaseFields = append(rel.BaseFields, f)
 			} else {
 				panic(fmt.Errorf(
-					"bun: %s belongs-to %s: %s must have column %s",
-					t.TypeName, field.GoName, t.TypeName, baseColumn,
+					"bun: %s belongs-to %s: %s must have column %s "+
+						"(to override, add join:base_column=join_column tag to %s field)",
+					t.TypeName, field.GoName, t.TypeName, baseColumn, field.GoName,
 				))
 			}
 
@@ -589,34 +592,42 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 				rel.JoinFields = append(rel.JoinFields, f)
 			} else {
 				panic(fmt.Errorf(
-					"bun: %s belongs-to %s: %s must have column %s",
-					t.TypeName, field.GoName, joinTable.TypeName, joinColumn,
+					"bun: %s belongs-to %s: %s must have column %s "+
+						"(to override, add join:base_column=join_column tag to %s field)",
+					t.TypeName, field.GoName, joinTable.TypeName, joinColumn, field.GoName,
 				))
 			}
 		}
-		return rel
+	} else {
+		rel.JoinFields = joinTable.PKs
+		fkPrefix := internal.Underscore(field.GoName) + "_"
+		for _, joinPK := range joinTable.PKs {
+			fkName := fkPrefix + joinPK.Name
+			if fk := t.FieldMap[fkName]; fk != nil {
+				rel.BaseFields = append(rel.BaseFields, fk)
+				continue
+			}
+
+			if fk := t.FieldMap[joinPK.Name]; fk != nil {
+				rel.BaseFields = append(rel.BaseFields, fk)
+				continue
+			}
+
+			panic(fmt.Errorf(
+				"bun: %s belongs-to %s: %s must have column %s "+
+					"(to override, use join:base_column=join_column tag on %s field)",
+				t.TypeName, field.GoName, t.TypeName, fkName, field.GoName,
+			))
+		}
 	}
 
-	rel.JoinFields = joinTable.PKs
-	fkPrefix := internal.Underscore(field.GoName) + "_"
-	for _, joinPK := range joinTable.PKs {
-		fkName := fkPrefix + joinPK.Name
-		if fk := t.FieldMap[fkName]; fk != nil {
-			rel.BaseFields = append(rel.BaseFields, fk)
-			continue
+	for _, f := range rel.BaseFields {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
+			rel.IsArrayRelation = true
+			break
 		}
-
-		if fk := t.FieldMap[joinPK.Name]; fk != nil {
-			rel.BaseFields = append(rel.BaseFields, fk)
-			continue
-		}
-
-		panic(fmt.Errorf(
-			"bun: %s belongs-to %s: %s must have column %s "+
-				"(to override, use join:base_column=join_column tag on %s field)",
-			t.TypeName, field.GoName, t.TypeName, fkName, field.GoName,
-		))
 	}
+
 	return rel
 }
 
@@ -681,6 +692,14 @@ func (t *Table) hasOneRelation(field *Field) *Relation {
 			field.GoName, t.TypeName, joinTable.TypeName, fkName, field.GoName,
 		))
 	}
+
+	for _, f := range rel.BaseFields {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
+			rel.IsArrayRelation = true
+			break
+		}
+	}
+
 	return rel
 }
 
@@ -779,6 +798,13 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 		rel.PolymorphicValue = polymorphicValue
 	}
 
+	for _, f := range rel.BaseFields {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
+			rel.IsArrayRelation = true
+			break
+		}
+	}
+
 	return rel
 }
 
@@ -833,7 +859,7 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 		rightColumn = joinTable.TypeName
 	}
 
-	leftField := m2mTable.fieldByGoName(leftColumn)
+	leftField := m2mTable.fieldBySnakeName(leftColumn)
 	if leftField == nil {
 		panic(fmt.Errorf(
 			"bun: %s many-to-many %s: %s must have field %s "+
@@ -842,7 +868,7 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 		))
 	}
 
-	rightField := m2mTable.fieldByGoName(rightColumn)
+	rightField := m2mTable.fieldBySnakeName(rightColumn)
 	if rightField == nil {
 		panic(fmt.Errorf(
 			"bun: %s many-to-many %s: %s must have field %s "+
@@ -858,6 +884,13 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 	rightRel := m2mTable.belongsToRelation(rightField)
 	rel.JoinFields = rightRel.JoinFields
 	rel.M2MJoinFields = rightRel.BaseFields
+
+	for _, f := range rel.M2MBaseFields {
+		if f.Tag.HasOption("array") || strings.Contains(f.UserSQLType, "[]") || strings.Contains(f.DiscoveredSQLType, "[]") {
+			rel.IsArrayRelation = true
+			break
+		}
+	}
 
 	return rel
 }
@@ -1045,4 +1078,65 @@ func makeIndex(a, b []int) []int {
 	dest = append(dest, a...)
 	dest = append(dest, b...)
 	return dest
+}
+
+// fieldBySnakeName looks up a field by its SQL snake_case name.
+// It first tries direct match, then tries converting to CamelCase.
+func (t *Table) fieldBySnakeName(snakeName string) *Field {
+	// First try direct lookup in FieldMap (works if field name is same as column name)
+	if f, ok := t.FieldMap[snakeName]; ok {
+		return f
+	}
+
+	// Try converting snake_case to CamelCase
+	camelName := internal.ToExported(internal.CamelCased(snakeName))
+	if f, ok := t.FieldMap[camelName]; ok {
+		return f
+	}
+
+	// Try iterating through all fields to check SQLName
+	for _, f := range t.allFields {
+		if string(f.SQLName) == snakeName {
+			return f
+		}
+	}
+
+	// Special check for embedded/extended structs - more thorough search
+	for _, f := range t.Fields {
+		if f.IndirectType.Kind() == reflect.Struct {
+			if f.Tag.HasOption("extend") || f.Tag.HasOption("embed") {
+				// This is an embedded struct with extend/embed tag
+				if embeddedTable, ok := t.StructMap[f.Name]; ok && embeddedTable.Table != nil {
+					if embField := embeddedTable.Table.fieldBySnakeName(snakeName); embField != nil {
+						// Create a properly cloned field with merged index path
+						clone := embField.Clone()
+						clone.Index = makeIndex(f.Index, embField.Index)
+						return clone
+					}
+				}
+			}
+		}
+	}
+
+	// Look for the field in all StructMap entries (handles unnamed embedding too)
+	if t.StructMap != nil {
+		for _, structField := range t.StructMap {
+			if structField.Table != nil {
+				if f := structField.Table.fieldBySnakeName(snakeName); f != nil {
+					clone := f.Clone()
+					clone.Index = makeIndex(structField.Index, f.Index)
+					return clone
+				}
+			}
+		}
+	}
+
+	// Try searching by exact GoName match in all fields
+	return t.fieldByGoName(camelName)
+}
+
+// isArrayType checks if a type is a slice or array
+func isArrayType(typ reflect.Type) bool {
+	kind := typ.Kind()
+	return kind == reflect.Slice || kind == reflect.Array
 }

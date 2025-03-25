@@ -315,3 +315,80 @@ func AppendQueryAppender(fmter Formatter, b []byte, app QueryAppender) []byte {
 	}
 	return bb
 }
+
+// AppendInt64Array formats an array of int64 values into SQL-compatible array syntax
+// For PostgreSQL, it formats as ARRAY[1, 3, 5]
+func AppendInt64Array(fmter Formatter, b []byte, v []int64) []byte {
+	b = append(b, "ARRAY["...)
+	for i, n := range v {
+		if i > 0 {
+			b = append(b, ", "...)
+		}
+		b = strconv.AppendInt(b, n, 10)
+	}
+	b = append(b, "]"...)
+	return b
+}
+
+// AppendAnyArray formats any slice value into SQL-compatible array syntax
+// This handles int, int64, string, etc. arrays generically
+func AppendAnyArray(fmter Formatter, b []byte, v reflect.Value) []byte {
+	if v.Kind() != reflect.Slice && v.Kind() != reflect.Array {
+		return append(b, "ERROR: expected array or slice"...)
+	}
+
+	elemKind := v.Type().Elem().Kind()
+	length := v.Len()
+
+	// Start with ARRAY[
+	b = append(b, "ARRAY["...)
+
+	for i := 0; i < length; i++ {
+		if i > 0 {
+			b = append(b, ", "...)
+		}
+
+		elem := v.Index(i)
+		switch elemKind {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			b = strconv.AppendInt(b, elem.Int(), 10)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			b = strconv.AppendUint(b, elem.Uint(), 10)
+		case reflect.Float32, reflect.Float64:
+			b = strconv.AppendFloat(b, elem.Float(), 'f', -1, 64)
+		case reflect.String:
+			b = fmter.Dialect().AppendString(b, elem.String())
+		case reflect.Bool:
+			if elem.Bool() {
+				b = append(b, "TRUE"...)
+			} else {
+				b = append(b, "FALSE"...)
+			}
+		default:
+			// Fallback for complex types
+			s := fmt.Sprintf("%v", elem.Interface())
+			b = fmter.Dialect().AppendString(b, s)
+		}
+	}
+
+	// Close the array syntax
+	b = append(b, "]"...)
+	return b
+}
+
+// AppendAnyArrayValue is a wrapper around AppendAnyArray that takes a reflect.Value
+// and returns a formatted SQL array value
+func AppendAnyArrayValue(v reflect.Value) interface{} {
+	return &arrayValue{v: v}
+}
+
+// arrayValue is a wrapper for array values to implement formatter interfaces
+type arrayValue struct {
+	v reflect.Value
+}
+
+// AppendValue implements the AppendValue interface for proper formatting in SQL queries
+func (a *arrayValue) AppendValue(fmter Formatter, b []byte) ([]byte, error) {
+	b = AppendAnyArray(fmter, b, a.v)
+	return b, nil
+}
