@@ -22,7 +22,14 @@ func Underscore(s string) string {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if IsUpper(c) {
-			if i > 0 && i+1 < len(s) && (IsLower(s[i-1]) || IsLower(s[i+1])) {
+			// Check if this is part of an acronym (consecutive uppercase letters)
+			isAcronymStart := i > 0 && IsLower(s[i-1])
+
+			// Check if this is the end of an acronym
+			isAcronymEnd := i+1 < len(s) && IsLower(s[i+1])
+
+			// Only add underscore if it's the start of an acronym or a standalone uppercase letter
+			if i > 0 && (isAcronymStart || (isAcronymEnd && !IsUpper(s[i-1]))) {
 				r = append(r, '_', ToLower(c))
 			} else {
 				r = append(r, ToLower(c))

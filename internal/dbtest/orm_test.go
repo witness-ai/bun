@@ -14,6 +14,7 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dbfixture"
 	"github.com/uptrace/bun/dialect/feature"
+	"github.com/uptrace/bun/dialect/pgdialect"
 )
 
 func TestORM(t *testing.T) {
@@ -579,4 +580,204 @@ func loadTestData(t *testing.T, ctx context.Context, db *bun.DB) {
 	fixture := dbfixture.New(db, dbfixture.WithTruncateTables())
 	err := fixture.Load(ctx, os.DirFS("testdata"), "fixture.yaml")
 	require.NoError(t, err)
+}
+
+// ArrayBelongsTo represents a model for belongs-to relation tests
+type ArrayBelongsTo struct {
+	bun.BaseModel `bun:"array_belongs_to,alias:bt"`
+
+	ID       int `bun:",pk"`
+	ParentID int
+}
+
+// ArrayChild represents a child model for has-many and has-one relation tests
+type ArrayChild struct {
+	bun.BaseModel `bun:"array_children,alias:c"`
+
+	ID       int `bun:",pk"`
+	Name     string
+	ParentID int
+}
+
+// ArrayParent represents a parent model with array-based references
+type ArrayParent struct {
+	bun.BaseModel `bun:"parent_with_array_refs,alias:p"`
+
+	ID       int `bun:",pk"`
+	Name     string
+	ChildIDs []int `bun:",array"` // Array column to store child IDs
+
+	// Relations
+	Children     []ArrayChild    `bun:"rel:has-many,join:id=parent_id"`
+	Child        *ArrayChild     `bun:"rel:has-one,join:id=parent_id"`
+	BelongsChild *ArrayBelongsTo `bun:"rel:belongs-to"`
+	Tags         []ArrayTag      `bun:"m2m:array_parent_tags"` // M2M relation
+}
+
+// ArrayTag represents a tag model for array relation tests
+type ArrayTag struct {
+	bun.BaseModel `bun:"array_tags,alias:at"`
+
+	ID   int `bun:",pk"`
+	Name string
+
+	Parents []ArrayParent `bun:"m2m:array_parent_tags"` // M2M relation
+}
+
+// ArrayParentTag represents a join table for parent-tag many-to-many relation
+type ArrayParentTag struct {
+	bun.BaseModel `bun:"array_parent_tags,alias:apt"`
+
+	ParentID    int          `bun:",pk"`
+	ArrayParent *ArrayParent `bun:"rel:belongs-to,join:parent_id=id"`
+	TagID       int          `bun:",pk"`
+	ArrayTag    *ArrayTag    `bun:"rel:belongs-to,join:tag_id=id"`
+}
+
+// TestArrayRelations tests array-based relationships which are only supported in PostgreSQL
+func TestArrayRelations(t *testing.T) {
+	onlyRunForDialects(t, map[string]bool{
+		"pg":  true,
+		"pgx": true,
+	}, func(t *testing.T, db *bun.DB) {
+		ctx := context.Background()
+
+		// Register models including join table for M2M
+		db.RegisterModel((*ArrayParentTag)(nil))
+		db.RegisterModel((*ArrayParent)(nil), (*ArrayChild)(nil), (*ArrayBelongsTo)(nil), (*ArrayTag)(nil))
+
+		// Create tables
+		for _, model := range []interface{}{(*ArrayParent)(nil), (*ArrayChild)(nil), (*ArrayBelongsTo)(nil), (*ArrayTag)(nil), (*ArrayParentTag)(nil)} {
+			_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+			require.NoError(t, err)
+
+			_, err = db.NewCreateTable().Model(model).Exec(ctx)
+			require.NoError(t, err)
+		}
+
+		// Insert tags
+		for i := 1; i <= 3; i++ {
+			tag := &ArrayTag{
+				ID:   i,
+				Name: fmt.Sprintf("Tag %d", i),
+			}
+			_, err := db.NewInsert().Model(tag).Exec(ctx)
+			require.NoError(t, err)
+		}
+
+		// Insert parent
+		parent := &ArrayParent{
+			ID:       1,
+			Name:     "Parent 1",
+			ChildIDs: []int{100, 200, 300},
+		}
+		_, err := db.NewInsert().Model(parent).Exec(ctx)
+		require.NoError(t, err)
+
+		// Insert children
+		for i := 1; i <= 3; i++ {
+			child := &ArrayChild{
+				ID:       i,
+				Name:     fmt.Sprintf("Child %d", i),
+				ParentID: parent.ID,
+			}
+			_, err := db.NewInsert().Model(child).Exec(ctx)
+			require.NoError(t, err)
+		}
+
+		// Insert ArrayBelongsTo
+		belongsChild := &ArrayBelongsTo{
+			ID:       1,
+			ParentID: parent.ID,
+		}
+		_, err = db.NewInsert().Model(belongsChild).Exec(ctx)
+		require.NoError(t, err)
+
+		// Create parent-tag relationships
+		for i := 1; i <= 3; i++ {
+			rel := &ArrayParentTag{
+				ParentID: parent.ID,
+				TagID:    i,
+			}
+			_, err := db.NewInsert().Model(rel).Exec(ctx)
+			require.NoError(t, err)
+		}
+
+		// Test querying parent with all related records
+		var parentWithChildren ArrayParent
+		err = db.NewSelect().
+			Model(&parentWithChildren).
+			Relation("Children").
+			Relation("Child").
+			Relation("BelongsChild").
+			Relation("Tags").
+			Where("p.id = ?", parent.ID).
+			Scan(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 3, len(parentWithChildren.Children))
+		require.Equal(t, "Child 1", parentWithChildren.Child.Name)
+		require.NotNil(t, parentWithChildren.BelongsChild)
+		require.Equal(t, 3, len(parentWithChildren.Tags))
+
+		// Test array column data
+		require.Equal(t, 3, len(parentWithChildren.ChildIDs))
+		require.Equal(t, []int{100, 200, 300}, parentWithChildren.ChildIDs)
+
+		// Test M2M relationship from the other side
+		var tagsWithParents []ArrayTag
+		err = db.NewSelect().
+			Model(&tagsWithParents).
+			Relation("Parents").
+			Where("at.id = ?", 1).
+			Scan(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 1, len(tagsWithParents))
+		require.Equal(t, 1, len(tagsWithParents[0].Parents))
+		require.Equal(t, parent.ID, tagsWithParents[0].Parents[0].ID)
+
+		// Verify tags data
+		tagNames := []string{}
+		for _, tag := range parentWithChildren.Tags {
+			tagNames = append(tagNames, tag.Name)
+		}
+		require.ElementsMatch(t, []string{"Tag 1", "Tag 2", "Tag 3"}, tagNames)
+
+		// Additional tests for PostgreSQL array operations
+		// Test array contains using the ChildIDs array column
+		var parentWithArray ArrayParent
+		err = db.NewSelect().
+			Model(&parentWithArray).
+			Where("p.child_ids @> ?", pgdialect.Array([]int{200})).
+			Scan(ctx)
+		require.NoError(t, err)
+		require.Equal(t, parent.ID, parentWithArray.ID)
+
+		// Test array element update
+		_, err = db.NewUpdate().
+			Model(&ArrayParent{}).
+			Set("child_ids[1] = ?", 999).
+			Where("id = ?", parent.ID).
+			Exec(ctx)
+		require.NoError(t, err)
+
+		// Verify the update worked
+		var updatedParent ArrayParent
+		err = db.NewSelect().
+			Model(&updatedParent).
+			Where("id = ?", parent.ID).
+			Scan(ctx)
+		require.NoError(t, err)
+		require.Contains(t, updatedParent.ChildIDs, 999)
+	})
+}
+
+// Helper function to run tests only for specific dialects
+func onlyRunForDialects(t *testing.T, dialects map[string]bool, fn func(t *testing.T, db *bun.DB)) {
+	testEachDB(t, func(t *testing.T, dbName string, db *bun.DB) {
+		if dialects[dbName] {
+			fn(t, db)
+		} else {
+			t.Skipf("Skipping test for dialect %s", dbName)
+		}
+	})
 }
