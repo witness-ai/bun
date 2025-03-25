@@ -188,7 +188,7 @@ func sqlite(tb testing.TB) *bun.DB {
 func mssql2019(tb testing.TB) *bun.DB {
 	dsn := os.Getenv("MSSQL2019")
 	if dsn == "" {
-		dsn = "sqlserver://sa:passWORD1@localhost:14339?database=test"
+		dsn = "sqlserver://sa:passWORD1@localhost:14339?database=test&encrypt=disable"
 	}
 
 	sqldb, err := sql.Open("sqlserver", dsn)
