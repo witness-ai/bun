@@ -133,6 +133,33 @@ func (m *hasManyModel) parkStruct() error {
 func baseValues(model TableModel, fields []*schema.Field) map[internal.MapKey][]reflect.Value {
 	fieldIndex := model.Relation().Field.Index
 	m := make(map[internal.MapKey][]reflect.Value)
+
+	// Special case for array relationships
+	var isArrayRelation bool
+	for _, field := range fields {
+		if field.Tag.HasOption("array") {
+			isArrayRelation = true
+			break
+		}
+	}
+
+	if isArrayRelation {
+		// For array relationships, we use parent ID as the key
+		// This avoids trying to use an array as a map key
+		parentKey := make([]interface{}, 0, 1)
+		walk(model.rootValue(), model.parentIndex(), func(v reflect.Value) {
+			// Use the parent model's primary key as the map key
+			parentKey = parentKey[:0]
+			parentID := model.rootValue().FieldByName("ID")
+			parentKey = append(parentKey, parentID.Interface())
+
+			mapKey := internal.NewMapKey(parentKey)
+			m[mapKey] = append(m[mapKey], v.FieldByIndex(fieldIndex))
+		})
+		return m
+	}
+
+	// Original implementation for non-array relationships
 	key := make([]interface{}, 0, len(fields))
 	walk(model.rootValue(), model.parentIndex(), func(v reflect.Value) {
 		key = modelKey(key[:0], v, fields)
@@ -162,8 +189,7 @@ func indirectAsKey(field reflect.Value) interface{} {
 			switch reflect.TypeOf(v).Kind() {
 			case reflect.Array, reflect.Chan, reflect.Func,
 				reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
-				// NOTE #1107, these types cannot be used as map key,
-				// let us use original logic.
+				// For complex types, just use the interface value directly
 				return i
 			default:
 				return v
@@ -171,5 +197,6 @@ func indirectAsKey(field reflect.Value) interface{} {
 		}
 	}
 
+	// For simplicity, just return the indirect value instead of special handling for arrays
 	return reflect.Indirect(field).Interface()
 }

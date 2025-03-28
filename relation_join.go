@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/feature"
 	"github.com/uptrace/bun/internal"
 	"github.com/uptrace/bun/schema"
@@ -72,22 +73,162 @@ func (j *relationJoin) manyQuery(q *SelectQuery) *SelectQuery {
 }
 
 func (j *relationJoin) manyQueryCompositeIn(where []byte, q *SelectQuery) *SelectQuery {
-	if len(j.Relation.JoinPKs) > 1 {
-		where = append(where, '(')
+	// Check if this is an array relationship where the join field is an array type
+	if j.Relation.IsArrayRelation {
+		// Handle array relationship differently
+		var arrayOnBase bool
+
+		// Determine which side has the array
+		for _, field := range j.Relation.BasePKs {
+			if field.Tag.HasOption("array") {
+				arrayOnBase = true
+				break
+			}
+		}
+
+		if arrayOnBase {
+			// Base has array field, use = ANY operator
+			for i, baseField := range j.Relation.BasePKs {
+				if baseField.Tag.HasOption("array") {
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, j.Relation.JoinPKs[i].SQLName...)
+					where = append(where, " = ANY("...)
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						baseField,
+					)
+					where = append(where, ")"...)
+				} else {
+					// Standard condition for non-array fields
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, j.Relation.JoinPKs[i].SQLName...)
+					where = append(where, " = "...)
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						baseField,
+					)
+				}
+			}
+		} else {
+			// Join has array field, use = ANY operator
+			for i, joinField := range j.Relation.JoinPKs {
+				if joinField.Tag.HasOption("array") {
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						j.Relation.BasePKs[i],
+					)
+					where = append(where, " = ANY("...)
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, joinField.SQLName...)
+					where = append(where, ")"...)
+				} else {
+					// Standard condition for non-array fields
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, joinField.SQLName...)
+					where = append(where, " = "...)
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						j.Relation.BasePKs[i],
+					)
+				}
+			}
+		}
+	} else {
+		// Original implementation for non-array relationships
+		// Check if any of the base PKs is an array field
+		var hasArrayField bool
+		for _, field := range j.Relation.BasePKs {
+			if field.Tag.HasOption("array") {
+				hasArrayField = true
+				break
+			}
+		}
+
+		if hasArrayField && q.db.Dialect().Name() == dialect.PG {
+			// For PostgreSQL with array fields, we need a special approach
+			if len(j.Relation.BasePKs) == 1 && j.Relation.BasePKs[0].Tag.HasOption("array") {
+				// Simple case: single array field
+				where = append(where, j.JoinModel.Table().SQLAlias...)
+				where = append(where, '.')
+				where = append(where, j.Relation.JoinPKs[0].SQLName...)
+				where = append(where, " = ANY("...)
+				where = appendColumnValue(
+					q.db.Formatter(),
+					where,
+					j.JoinModel.rootValue(),
+					j.JoinModel.parentIndex(),
+					j.Relation.BasePKs[0],
+				)
+				where = append(where, ")"...)
+			} else {
+				// Multiple fields or complex case - use standard approach for now
+				// but will need more work for full array support
+				if len(j.Relation.JoinPKs) > 1 {
+					where = append(where, '(')
+				}
+				where = appendColumns(where, j.JoinModel.Table().SQLAlias, j.Relation.JoinPKs)
+				if len(j.Relation.JoinPKs) > 1 {
+					where = append(where, ')')
+				}
+				where = append(where, " IN ("...)
+				where = appendChildValues(
+					q.db.Formatter(),
+					where,
+					j.JoinModel.rootValue(),
+					j.JoinModel.parentIndex(),
+					j.Relation.BasePKs,
+				)
+				where = append(where, ")"...)
+			}
+		} else {
+			// Standard non-array implementation
+			if len(j.Relation.JoinPKs) > 1 {
+				where = append(where, '(')
+			}
+			where = appendColumns(where, j.JoinModel.Table().SQLAlias, j.Relation.JoinPKs)
+			if len(j.Relation.JoinPKs) > 1 {
+				where = append(where, ')')
+			}
+			where = append(where, " IN ("...)
+			where = appendChildValues(
+				q.db.Formatter(),
+				where,
+				j.JoinModel.rootValue(),
+				j.JoinModel.parentIndex(),
+				j.Relation.BasePKs,
+			)
+			where = append(where, ")"...)
+		}
 	}
-	where = appendColumns(where, j.JoinModel.Table().SQLAlias, j.Relation.JoinPKs)
-	if len(j.Relation.JoinPKs) > 1 {
-		where = append(where, ')')
-	}
-	where = append(where, " IN ("...)
-	where = appendChildValues(
-		q.db.Formatter(),
-		where,
-		j.JoinModel.rootValue(),
-		j.JoinModel.parentIndex(),
-		j.Relation.BasePKs,
-	)
-	where = append(where, ")"...)
+
 	if len(j.additionalJoinOnConditions) > 0 {
 		where = append(where, " AND "...)
 		where = appendAdditionalJoinOnConditions(q.db.Formatter(), where, j.additionalJoinOnConditions)
@@ -106,21 +247,165 @@ func (j *relationJoin) manyQueryCompositeIn(where []byte, q *SelectQuery) *Selec
 }
 
 func (j *relationJoin) manyQueryMulti(where []byte, q *SelectQuery) *SelectQuery {
-	where = appendMultiValues(
-		q.db.Formatter(),
-		where,
-		j.JoinModel.rootValue(),
-		j.JoinModel.parentIndex(),
-		j.Relation.BasePKs,
-		j.Relation.JoinPKs,
-		j.JoinModel.Table().SQLAlias,
-	)
+	if j.Relation.IsArrayRelation {
+		// Use the same logic as manyQueryCompositeIn for array relationships
+		var arrayOnBase bool
 
-	q = q.Where(internal.String(where))
+		// Determine which side has the array
+		for _, field := range j.Relation.BasePKs {
+			if field.Tag.HasOption("array") {
+				arrayOnBase = true
+				break
+			}
+		}
+
+		where = append(where, '(')
+
+		if arrayOnBase {
+			// Base has array field, use = ANY operator
+			for i, baseField := range j.Relation.BasePKs {
+				if baseField.Tag.HasOption("array") {
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, j.Relation.JoinPKs[i].SQLName...)
+					where = append(where, " = ANY("...)
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						baseField,
+					)
+					where = append(where, ")"...)
+				} else {
+					// Standard condition for non-array fields
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, j.Relation.JoinPKs[i].SQLName...)
+					where = append(where, " = "...)
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						baseField,
+					)
+				}
+			}
+		} else {
+			// Join has array field, use = ANY operator
+			for i, joinField := range j.Relation.JoinPKs {
+				if joinField.Tag.HasOption("array") {
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						j.Relation.BasePKs[i],
+					)
+					where = append(where, " = ANY("...)
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, joinField.SQLName...)
+					where = append(where, ")"...)
+				} else {
+					// Standard condition for non-array fields
+					if i > 0 {
+						where = append(where, " AND "...)
+					}
+					where = append(where, j.JoinModel.Table().SQLAlias...)
+					where = append(where, '.')
+					where = append(where, joinField.SQLName...)
+					where = append(where, " = "...)
+					where = appendColumnValue(
+						q.db.Formatter(),
+						where,
+						j.JoinModel.rootValue(),
+						j.JoinModel.parentIndex(),
+						j.Relation.BasePKs[i],
+					)
+				}
+			}
+		}
+
+		where = append(where, ')')
+	} else {
+		// Check if any of the base PKs is an array field
+		var hasArrayField bool
+		for _, field := range j.Relation.BasePKs {
+			if field.Tag.HasOption("array") {
+				hasArrayField = true
+				break
+			}
+		}
+
+		if hasArrayField && q.db.Dialect().Name() == dialect.PG {
+			// For PostgreSQL with array fields, we need a special approach
+			if len(j.Relation.BasePKs) == 1 && j.Relation.BasePKs[0].Tag.HasOption("array") {
+				// Simple case: single array field
+				where = append(where, j.JoinModel.Table().SQLAlias...)
+				where = append(where, '.')
+				where = append(where, j.Relation.JoinPKs[0].SQLName...)
+				where = append(where, " = ANY("...)
+				where = appendColumnValue(
+					q.db.Formatter(),
+					where,
+					j.JoinModel.rootValue(),
+					j.JoinModel.parentIndex(),
+					j.Relation.BasePKs[0],
+				)
+				where = append(where, ")"...)
+			} else {
+				// Multiple fields or complex case - use standard approach for now
+				// but will need more work for full array support
+				if len(j.Relation.JoinPKs) > 1 {
+					where = append(where, '(')
+				}
+				where = appendColumns(where, j.JoinModel.Table().SQLAlias, j.Relation.JoinPKs)
+				if len(j.Relation.JoinPKs) > 1 {
+					where = append(where, ')')
+				}
+				where = append(where, " IN ("...)
+				where = appendChildValues(
+					q.db.Formatter(),
+					where,
+					j.JoinModel.rootValue(),
+					j.JoinModel.parentIndex(),
+					j.Relation.BasePKs,
+				)
+				where = append(where, ")"...)
+			}
+		} else {
+			// Original implementation for non-array relationships
+			where = append(where, '(')
+			where = appendMultiValues(
+				q.db.Formatter(),
+				where,
+				j.JoinModel.rootValue(),
+				j.JoinModel.parentIndex(),
+				j.Relation.BasePKs,
+				j.Relation.JoinPKs,
+				j.JoinModel.Table().SQLAlias,
+			)
+			where = append(where, ')')
+		}
+	}
 
 	if len(j.additionalJoinOnConditions) > 0 {
-		q = q.Where(internal.String(appendAdditionalJoinOnConditions(q.db.Formatter(), []byte{}, j.additionalJoinOnConditions)))
+		where = append(where, " AND "...)
+		where = appendAdditionalJoinOnConditions(q.db.Formatter(), where, j.additionalJoinOnConditions)
 	}
+
+	q = q.Where(internal.String(where))
 
 	if j.Relation.PolymorphicField != nil {
 		q = q.Where("? = ?", j.Relation.PolymorphicField.SQLName, j.Relation.PolymorphicValue)
@@ -226,9 +511,32 @@ func (j *relationJoin) m2mQuery(q *SelectQuery) *SelectQuery {
 	joinTable := j.JoinModel.Table()
 	for i, m2mJoinField := range j.Relation.M2MJoinPKs {
 		joinField := j.Relation.JoinPKs[i]
-		q = q.Where("?.? = ?.?",
-			joinTable.SQLAlias, joinField.SQLName,
-			j.Relation.M2MTable.SQLAlias, m2mJoinField.SQLName)
+
+		// Handle array relationships in M2M joins
+		if j.Relation.IsArrayRelation {
+			// Check which field is an array type
+			if joinField.Tag.HasOption("array") {
+				// Join field is an array, use the ANY function
+				q = q.Where("?.? = ANY(?.?)",
+					j.Relation.M2MTable.SQLAlias, m2mJoinField.SQLName,
+					joinTable.SQLAlias, joinField.SQLName)
+			} else if m2mJoinField.Tag.HasOption("array") {
+				// M2M join field is an array, use the array contains operator
+				q = q.Where("?.? @> ARRAY[?.?]",
+					j.Relation.M2MTable.SQLAlias, m2mJoinField.SQLName,
+					joinTable.SQLAlias, joinField.SQLName)
+			} else {
+				// Standard equality join
+				q = q.Where("?.? = ?.?",
+					joinTable.SQLAlias, joinField.SQLName,
+					j.Relation.M2MTable.SQLAlias, m2mJoinField.SQLName)
+			}
+		} else {
+			// Standard non-array join
+			q = q.Where("?.? = ?.?",
+				joinTable.SQLAlias, joinField.SQLName,
+				j.Relation.M2MTable.SQLAlias, m2mJoinField.SQLName)
+		}
 	}
 
 	j.applyTo(q)
@@ -327,18 +635,64 @@ func (j *relationJoin) appendHasOneJoin(
 	b = append(b, " ON "...)
 
 	b = append(b, '(')
-	for i, baseField := range j.Relation.BasePKs {
-		if i > 0 {
-			b = append(b, " AND "...)
+
+	// Handle the case where one of the fields is a PostgreSQL array type
+	if j.Relation.IsArrayRelation {
+		// Check which side of the relation is the array
+		for i, baseField := range j.Relation.BasePKs {
+			if i > 0 {
+				b = append(b, " AND "...)
+			}
+
+			// Check if base field is an array
+			if baseField.Tag.HasOption("array") {
+				// For array fields, use the PostgreSQL array contains (@>) operator
+				// or the 'ANY' function depending on which side is the array
+				b = j.appendBaseAlias(fmter, b)
+				b = append(b, '.')
+				b = append(b, baseField.SQLName...)
+				b = append(b, " @> ARRAY["...)
+				b = j.appendAlias(fmter, b)
+				b = append(b, '.')
+				b = append(b, j.Relation.JoinPKs[i].SQLName...)
+				b = append(b, "]"...)
+			} else if j.Relation.JoinPKs[i].Tag.HasOption("array") {
+				// Join field is an array, use the ANY function
+				b = j.appendBaseAlias(fmter, b)
+				b = append(b, '.')
+				b = append(b, baseField.SQLName...)
+				b = append(b, " = ANY("...)
+				b = j.appendAlias(fmter, b)
+				b = append(b, '.')
+				b = append(b, j.Relation.JoinPKs[i].SQLName...)
+				b = append(b, ")"...)
+			} else {
+				// Standard equality join
+				b = j.appendAlias(fmter, b)
+				b = append(b, '.')
+				b = append(b, j.Relation.JoinPKs[i].SQLName...)
+				b = append(b, " = "...)
+				b = j.appendBaseAlias(fmter, b)
+				b = append(b, '.')
+				b = append(b, baseField.SQLName...)
+			}
 		}
-		b = j.appendAlias(fmter, b)
-		b = append(b, '.')
-		b = append(b, j.Relation.JoinPKs[i].SQLName...)
-		b = append(b, " = "...)
-		b = j.appendBaseAlias(fmter, b)
-		b = append(b, '.')
-		b = append(b, baseField.SQLName...)
+	} else {
+		// Standard non-array join
+		for i, baseField := range j.Relation.BasePKs {
+			if i > 0 {
+				b = append(b, " AND "...)
+			}
+			b = j.appendAlias(fmter, b)
+			b = append(b, '.')
+			b = append(b, j.Relation.JoinPKs[i].SQLName...)
+			b = append(b, " = "...)
+			b = j.appendBaseAlias(fmter, b)
+			b = append(b, '.')
+			b = append(b, baseField.SQLName...)
+		}
 	}
+
 	b = append(b, ')')
 
 	if isSoftDelete {
@@ -358,6 +712,28 @@ func (j *relationJoin) appendHasOneJoin(
 func appendChildValues(
 	fmter schema.Formatter, b []byte, v reflect.Value, index []int, fields []*schema.Field,
 ) []byte {
+	// Check if any of the fields is an array type
+	var hasArrayField bool
+	var arrayField *schema.Field
+	for _, f := range fields {
+		if f.Tag.HasOption("array") {
+			hasArrayField = true
+			arrayField = f
+			break
+		}
+	}
+
+	// Special handling for PostgreSQL array fields
+	if hasArrayField && fmter.Dialect().Name() == dialect.PG {
+		// For array fields in PostgreSQL, we need special handling when used directly in WHERE clauses
+		// Simple case: a single array field
+		if len(fields) == 1 && arrayField != nil {
+			// Just return the array value directly - calling function handles ANY() syntax
+			return arrayField.AppendValue(fmter, b, reflect.Indirect(v).FieldByIndex(index))
+		}
+	}
+
+	// Original implementation for non-array relationships
 	seen := make(map[string]struct{})
 	walk(v, index, func(v reflect.Value) {
 		start := len(b)
@@ -450,4 +826,15 @@ func appendAdditionalJoinOnConditions(
 		b = fmter.AppendQuery(b, cond.Query, cond.Args...)
 	}
 	return b
+}
+
+// appendColumnValue is a helper function to append a single column value to the byte buffer
+func appendColumnValue(
+	fmter schema.Formatter, b []byte, v reflect.Value, index []int, field *schema.Field,
+) []byte {
+	v = reflect.Indirect(v)
+	if len(index) > 0 {
+		v = v.FieldByIndex(index)
+	}
+	return field.AppendValue(fmter, b, v)
 }

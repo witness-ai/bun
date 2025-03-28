@@ -603,6 +603,26 @@ func (t *Table) addRelation(rel *Relation) {
 	if ok {
 		panic(fmt.Errorf("%s already has %s", t, rel))
 	}
+
+	// Check if any of the base fields involved in the relation are array fields
+	// This is used to determine if special SQL generation is needed for arrays
+	for _, field := range rel.BasePKs {
+		if field.Tag.HasOption("array") {
+			rel.IsArrayRelation = true
+			break
+		}
+	}
+
+	// If not found in base fields, check join fields
+	if !rel.IsArrayRelation {
+		for _, field := range rel.JoinPKs {
+			if field.Tag.HasOption("array") {
+				rel.IsArrayRelation = true
+				break
+			}
+		}
+	}
+
 	t.Relations[rel.Field.GoName] = rel
 }
 
@@ -674,6 +694,17 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 				))
 			}
 		}
+
+		// Check if any base field is an array and indicate this is an array relation
+		for _, basePK := range rel.BasePKs {
+			if basePK.Tag.HasOption("array") {
+				// This is a belongs-to relationship where the base column is an array
+				// This requires special SQL generation in query building
+				rel.IsArrayRelation = true
+				break
+			}
+		}
+
 		return rel
 	}
 
@@ -697,6 +728,17 @@ func (t *Table) belongsToRelation(field *Field) *Relation {
 			t.TypeName, field.GoName, t.TypeName, fkName, field.GoName,
 		))
 	}
+
+	// Check if any base field is an array and indicate this is an array relation
+	for _, basePK := range rel.BasePKs {
+		if basePK.Tag.HasOption("array") {
+			// This is a belongs-to relationship where the base column is an array
+			// This requires special SQL generation in query building
+			rel.IsArrayRelation = true
+			break
+		}
+	}
+
 	return rel
 }
 
@@ -810,6 +852,10 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 
 			if f := joinTable.FieldMap[joinColumn]; f != nil {
 				rel.JoinPKs = append(rel.JoinPKs, f)
+				// Check if join field is an array
+				if f.Tag.HasOption("array") {
+					rel.IsArrayRelation = true
+				}
 			} else {
 				panic(fmt.Errorf(
 					"bun: %s has-many %s: %s must have column %s",
@@ -828,11 +874,19 @@ func (t *Table) hasManyRelation(field *Field) *Relation {
 			joinColumn := fkPrefix + pk.Name
 			if fk := joinTable.FieldMap[joinColumn]; fk != nil {
 				rel.JoinPKs = append(rel.JoinPKs, fk)
+				// Check if join field is an array
+				if fk.Tag.HasOption("array") {
+					rel.IsArrayRelation = true
+				}
 				continue
 			}
 
 			if fk := joinTable.FieldMap[pk.Name]; fk != nil {
 				rel.JoinPKs = append(rel.JoinPKs, fk)
+				// Check if join field is an array
+				if fk.Tag.HasOption("array") {
+					rel.IsArrayRelation = true
+				}
 				continue
 			}
 
@@ -939,6 +993,24 @@ func (t *Table) m2mRelation(field *Field) *Relation {
 	rightRel := m2mTable.belongsToRelation(rightField)
 	rel.JoinPKs = rightRel.JoinPKs
 	rel.M2MJoinPKs = rightRel.BasePKs
+
+	// Check if any of the relationship fields is a PostgreSQL array
+	// If so, mark this as an array relation
+	for _, field := range rel.BasePKs {
+		if field.Tag.HasOption("array") {
+			rel.IsArrayRelation = true
+			break
+		}
+	}
+
+	if !rel.IsArrayRelation {
+		for _, field := range rel.JoinPKs {
+			if field.Tag.HasOption("array") {
+				rel.IsArrayRelation = true
+				break
+			}
+		}
+	}
 
 	return rel
 }

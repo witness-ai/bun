@@ -26,6 +26,10 @@ type Relation struct {
 	OnDelete  string
 	Condition []string
 
+	// IsArrayRelation indicates that one side of the relation is a PostgreSQL array
+	// This requires special handling when generating SQL for joins
+	IsArrayRelation bool
+
 	PolymorphicField *Field
 	PolymorphicValue string
 
