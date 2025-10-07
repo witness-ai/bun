@@ -7,11 +7,11 @@ import (
 )
 
 type QueryAppender interface {
-	AppendQuery(fmter Formatter, b []byte) ([]byte, error)
+	AppendQuery(gen QueryGen, b []byte) ([]byte, error)
 }
 
 type ColumnsAppender interface {
-	AppendColumns(fmter Formatter, b []byte) ([]byte, error)
+	AppendColumns(gen QueryGen, b []byte) ([]byte, error)
 }
 
 //------------------------------------------------------------------------------
@@ -21,7 +21,7 @@ type Safe string
 
 var _ QueryAppender = (*Safe)(nil)
 
-func (s Safe) AppendQuery(fmter Formatter, b []byte) ([]byte, error) {
+func (s Safe) AppendQuery(gen QueryGen, b []byte) ([]byte, error) {
 	return append(b, s...), nil
 }
 
@@ -32,8 +32,8 @@ type Name string
 
 var _ QueryAppender = (*Name)(nil)
 
-func (s Name) AppendQuery(fmter Formatter, b []byte) ([]byte, error) {
-	return fmter.AppendName(b, string(s)), nil
+func (s Name) AppendQuery(gen QueryGen, b []byte) ([]byte, error) {
+	return gen.AppendName(b, string(s)), nil
 }
 
 //------------------------------------------------------------------------------
@@ -44,22 +44,23 @@ type Ident string
 
 var _ QueryAppender = (*Ident)(nil)
 
-func (s Ident) AppendQuery(fmter Formatter, b []byte) ([]byte, error) {
-	return fmter.AppendIdent(b, string(s)), nil
+func (s Ident) AppendQuery(gen QueryGen, b []byte) ([]byte, error) {
+	return gen.AppendIdent(b, string(s)), nil
 }
 
 //------------------------------------------------------------------------------
 
+// NOTE: It should not be modified after creation.
 type QueryWithArgs struct {
 	Query string
-	Args  []interface{}
+	Args  []any
 }
 
 var _ QueryAppender = QueryWithArgs{}
 
-func SafeQuery(query string, args []interface{}) QueryWithArgs {
+func SafeQuery(query string, args []any) QueryWithArgs {
 	if args == nil {
-		args = make([]interface{}, 0)
+		args = make([]any, 0)
 	} else if len(query) > 0 && strings.IndexByte(query, '?') == -1 {
 		internal.Warn.Printf("query %q has %v args, but no placeholders", query, args)
 	}
@@ -77,11 +78,11 @@ func (q QueryWithArgs) IsZero() bool {
 	return q.Query == "" && q.Args == nil
 }
 
-func (q QueryWithArgs) AppendQuery(fmter Formatter, b []byte) ([]byte, error) {
+func (q QueryWithArgs) AppendQuery(gen QueryGen, b []byte) ([]byte, error) {
 	if q.Args == nil {
-		return fmter.AppendIdent(b, q.Query), nil
+		return gen.AppendIdent(b, q.Query), nil
 	}
-	return fmter.AppendQuery(b, q.Query, q.Args...), nil
+	return gen.AppendQuery(b, q.Query, q.Args...), nil
 }
 
 //------------------------------------------------------------------------------
@@ -91,7 +92,7 @@ type QueryWithSep struct {
 	Sep string
 }
 
-func SafeQueryWithSep(query string, args []interface{}, sep string) QueryWithSep {
+func SafeQueryWithSep(query string, args []any, sep string) QueryWithSep {
 	return QueryWithSep{
 		QueryWithArgs: SafeQuery(query, args),
 		Sep:           sep,
