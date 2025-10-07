@@ -92,12 +92,22 @@ func (m *hasManyModel) Scan(src any) error {
 		return err
 	}
 
+	// Current implementation using JoinPKs (upstream approach)
 	for i, f := range m.rel.JoinPKs {
 		if f.Name == column {
 			m.structKey[i] = indirectAsKey(field.Value(m.strct))
 			break
 		}
 	}
+
+	// Historical Witness approach using the DeprecatedGetFieldValue implementation using JoinFields, instead of the latest
+	//   JoinPKs approach above.
+	// for _, f := range m.rel.JoinFields {
+	// 	if f.Name == field.Name {
+	// 		m.structKey = append(m.structKey, DeprecatedGetFieldValue(field.Value(m.strct)))
+	// 		break
+	// 	}
+	// }
 
 	return nil
 }
@@ -155,6 +165,8 @@ func baseValues(model TableModel, fields []*schema.Field) map[internal.MapKey][]
 func modelKey(key []any, strct reflect.Value, fields []*schema.Field) []any {
 	for _, f := range fields {
 		key = append(key, indirectAsKey(f.Value(strct)))
+		// Deprecated Witness Approach:
+		// key = append(key, DeprecatedGetFieldValue(f.Value(strct)))
 	}
 	return key
 }
@@ -183,3 +195,22 @@ func indirectAsKey(field reflect.Value) any {
 
 	return reflect.Indirect(field).Interface()
 }
+
+// DeprecatedGetFieldValue extracts the value from a reflect.Value, handling pointer types appropriately.
+// This is the historical implementation that was replaced with indirectAsKey for better
+// database type support and map key safety.
+// func DeprecatedGetFieldValue(fieldValue reflect.Value) interface{} {
+// 	var keyValue interface{}
+//
+// 	if fieldValue.Kind() == reflect.Ptr {
+// 		if !fieldValue.IsNil() {
+// 			keyValue = fieldValue.Elem().Interface()
+// 		} else {
+// 			keyValue = nil
+// 		}
+// 	} else {
+// 		keyValue = fieldValue.Interface()
+// 	}
+//
+// 	return keyValue
+// }
